@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  core:
+    name: Core (cross-platform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      # The transport/format core and its tests are platform-independent and gate every PR.
+      - run: dotnet build -c Release
+      - run: dotnet test -c Release --no-build --verbosity normal
+
+  windows:
+    name: Windows (full solution)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      # Windows-only projects (VSS/Service/GUI) build here as they are added in later milestones.
+      - run: dotnet build -c Release
+      - run: dotnet test -c Release --no-build --verbosity normal

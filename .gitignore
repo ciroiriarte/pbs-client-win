@@ -1,0 +1,39 @@
+# Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]64/
+publish/
+artifacts/
+
+# .NET
+*.user
+*.suo
+project.lock.json
+project.assets.json
+*.nuget.props
+*.nuget.targets
+
+# Rider / VS
+.idea/
+.vs/
+*.userprefs
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local tooling
+.dotnet/
+
+# Secrets / local config
+*.local.json
+appsettings.*.local.json
+*.pfx
+*.snk
+
+# OMC operational state
+.omc/
