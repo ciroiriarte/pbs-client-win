@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Pbs.Protocol;
@@ -67,6 +68,24 @@ public sealed class PbsClient : IDisposable
         var envelope = await _http.GetFromJsonAsync<ApiEnvelope<PbsVersion>>("api2/json/version", ct)
                        ?? throw new InvalidDataException("empty response from /version");
         return envelope.Data ?? throw new InvalidDataException("missing data in /version response");
+    }
+
+    /// <summary>
+    /// List snapshots in the configured datastore/namespace, optionally filtered by backup id.
+    /// Returns the raw JSON array elements from <c>/admin/datastore/{store}/snapshots</c>.
+    /// </summary>
+    public async Task<IReadOnlyList<JsonElement>> ListSnapshotsAsync(string? backupId = null, CancellationToken ct = default)
+    {
+        var store = Options.Datastore ?? throw new InvalidOperationException("datastore required");
+        var path = $"api2/json/admin/datastore/{Uri.EscapeDataString(store)}/snapshots";
+        var query = new List<string>();
+        if (!string.IsNullOrEmpty(Options.Namespace)) query.Add("ns=" + Uri.EscapeDataString(Options.Namespace));
+        if (!string.IsNullOrEmpty(backupId)) query.Add("backup-id=" + Uri.EscapeDataString(backupId));
+        if (query.Count > 0) path += "?" + string.Join('&', query);
+
+        var envelope = await _http.GetFromJsonAsync<ApiEnvelope<JsonElement>>(path, ct);
+        if (envelope?.Data is not { ValueKind: JsonValueKind.Array } arr) return Array.Empty<JsonElement>();
+        return arr.EnumerateArray().Select(e => e.Clone()).ToList();
     }
 
     private static Uri Normalize(Uri baseUrl)

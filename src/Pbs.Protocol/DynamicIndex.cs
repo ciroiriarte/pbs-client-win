@@ -55,6 +55,28 @@ public static class DynamicIndex
         return buffer;
     }
 
+    /// <summary>
+    /// Compute the <c>index_csum</c> for an ordered chunk list without materializing the index:
+    /// SHA256 over, per entry, <c>end_offset_le || digest</c>. This is the value PBS expects in the
+    /// <c>dynamic_close</c> call and recomputes during verify.
+    /// </summary>
+    public static ChunkDigest ComputeCsum(IReadOnlyList<ChunkRef> chunks)
+    {
+        ArgumentNullException.ThrowIfNull(chunks);
+        using var csum = SHA256.Create();
+        Span<byte> end = stackalloc byte[8];
+        foreach (var c in chunks)
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(end, (ulong)c.End);
+            var block = new byte[EntrySize];
+            end.CopyTo(block);
+            c.Digest.Span.CopyTo(block.AsSpan(8));
+            csum.TransformBlock(block, 0, block.Length, null, 0);
+        }
+        csum.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+        return ChunkDigest.FromBytes(csum.Hash!);
+    }
+
     /// <summary>Parse a dynamic index, validating magic and recomputing <c>index_csum</c>.</summary>
     public static IReadOnlyList<DynamicIndexEntry> Parse(ReadOnlySpan<byte> data)
     {
