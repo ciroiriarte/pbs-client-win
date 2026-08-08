@@ -25,6 +25,7 @@
     <ProjectReference Include="..\..\src\Pbs.Protocol\Pbs.Protocol.csproj" />
     <ProjectReference Include="..\..\src\Pbs.Chunker\Pbs.Chunker.csproj" />
     <ProjectReference Include="..\..\src\Pbs.Abstractions\Pbs.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Pbs.Pxar\Pbs.Pxar.csproj" />
   </ItemGroup>
 
 </Project>
