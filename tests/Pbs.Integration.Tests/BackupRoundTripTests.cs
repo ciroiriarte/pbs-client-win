@@ -62,5 +62,14 @@ public class BackupRoundTripTests
         var snapshots = await client.ListSnapshotsAsync(backupId);
         _out.WriteLine($"snapshots for {backupId}: {snapshots.Count}");
         Assert.NotEmpty(snapshots);
+
+        // Restore the archive over the reader protocol and byte-compare against the original.
+        await using var reader = await ReaderSession.OpenAsync(PbsTestServer.Options(), "host", backupId, backupTime);
+        using var restored = new MemoryStream();
+        var restoredLen = await reader.RestoreDynamicArchiveAsync(archiveName, restored);
+        _out.WriteLine($"restored {restoredLen} bytes");
+
+        Assert.Equal(data.Length, restoredLen);
+        Assert.True(data.AsSpan().SequenceEqual(restored.ToArray()), "restored bytes differ from original");
     }
 }
