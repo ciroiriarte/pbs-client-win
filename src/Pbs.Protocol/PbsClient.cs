@@ -50,8 +50,10 @@ public sealed class PbsClient : IDisposable
         var http = new HttpClient(handler)
         {
             BaseAddress = Normalize(options.BaseUrl),
+            // Prefer HTTP/2 (required by the backup/reader session) but fall back to HTTP/1.1 for
+            // the plain JSON API, which PBS may serve over 1.1 depending on ALPN negotiation.
             DefaultRequestVersion = HttpVersion.Version20,
-            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher,
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
         };
         http.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("PBSAPIToken", $"{options.Token.TokenId}:{options.Token.Secret}");
