@@ -27,9 +27,15 @@ try
         case "snapshot" when positionals is ["list", ..]:
         case "snapshots": // alias
             return await SnapshotsAsync(flags);
+        case "snapshot" when positionals is ["forget", var snap, ..]:
+            return await ForgetAsync(snap, flags);
+        case "snapshot" when positionals is ["notes", var snap, ..]:
+            return await NotesAsync(snap, positionals.Skip(2).ToList(), flags);
         case "snapshot":
-            Console.Error.WriteLine("usage: pbs-client-win snapshot list --repository <repo> [--ns <ns>]");
+            Console.Error.WriteLine("usage: pbs-client-win snapshot list|forget <type/id/time>|notes <type/id/time> [text]");
             return 1;
+        case "prune":
+            return await PruneAsync(positionals, flags);
         default:
             Console.Error.WriteLine($"unknown command: {args[0]}");
             Console.Error.WriteLine("run 'pbs-client-win --help' for usage");
@@ -150,6 +156,54 @@ static async Task<int> SnapshotsAsync(Dictionary<string, string> flags)
     return 0;
 }
 
+static async Task<int> ForgetAsync(string snapshot, Dictionary<string, string> flags)
+{
+    var opts = ResolveConnection(flags);
+    var (type, id, time) = ParseSnapshot(snapshot);
+    using var client = PbsClient.Create(opts);
+    await client.ForgetSnapshotAsync(type, id, time);
+    Console.WriteLine($"forgot {type}/{id}/{time}");
+    return 0;
+}
+
+static async Task<int> NotesAsync(string snapshot, List<string> rest, Dictionary<string, string> flags)
+{
+    var opts = ResolveConnection(flags);
+    var (type, id, time) = ParseSnapshot(snapshot);
+    using var client = PbsClient.Create(opts);
+    if (rest.Count == 0)
+    {
+        Console.WriteLine(await client.GetNotesAsync(type, id, time));
+    }
+    else
+    {
+        await client.SetNotesAsync(type, id, time, string.Join(' ', rest));
+        Console.WriteLine("notes updated");
+    }
+    return 0;
+}
+
+static async Task<int> PruneAsync(List<string> positionals, Dictionary<string, string> flags)
+{
+    if (positionals.Count != 1) { Console.Error.WriteLine("prune: expected a group <type/id>"); return 1; }
+    var parts = positionals[0].Split('/');
+    if (parts.Length != 2) throw new ArgumentException($"invalid group '{positionals[0]}' (expected type/id)");
+
+    var keep = new Dictionary<string, long>();
+    foreach (var opt in new[] { "keep-last", "keep-hourly", "keep-daily", "keep-weekly", "keep-monthly", "keep-yearly" })
+        if (flags.TryGetValue(opt, out var v) && long.TryParse(v, out var n)) keep[opt] = n;
+    if (keep.Count == 0) { Console.Error.WriteLine("prune: specify at least one --keep-* option"); return 1; }
+
+    var dryRun = flags.ContainsKey("dry-run");
+    var opts = ResolveConnection(flags);
+    using var client = PbsClient.Create(opts);
+    var entries = await client.PruneGroupAsync(parts[0], parts[1], keep, dryRun);
+    foreach (var e in entries.OrderByDescending(e => e.BackupTime))
+        Console.WriteLine($"  {(e.Keep ? "keep  " : "remove")} {parts[0]}/{parts[1]}/{e.BackupTime}");
+    Console.WriteLine($"{(dryRun ? "[dry-run] " : "")}{entries.Count(e => !e.Keep)} removed, {entries.Count(e => e.Keep)} kept");
+    return 0;
+}
+
 // ---- helpers ----
 
 static PbsConnectionOptions ResolveConnection(Dictionary<string, string> flags)
@@ -242,6 +296,9 @@ static void PrintUsage(string version)
     Console.WriteLine("  pbs-client-win backup <name.img>:<volume> --image --repository <repo> [--ns <ns>]   (Windows; whole-volume image via VSS)");
     Console.WriteLine("  pbs-client-win restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>]");
     Console.WriteLine("  pbs-client-win snapshot list --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  pbs-client-win snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  pbs-client-win snapshot notes <type/id/time> [text] --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  pbs-client-win prune <type/id> --keep-last N [--keep-daily N ...] [--dry-run] --repository <repo> [--ns <ns>]");
     Console.WriteLine();
     Console.WriteLine("Repository: [AUTHID@]HOST[:PORT]:DATASTORE  (e.g. root@pam!tok@pbs.example:store01)");
     Console.WriteLine("Credentials: --password/PBS_PASSWORD (token secret), --fingerprint/PBS_FINGERPRINT.");

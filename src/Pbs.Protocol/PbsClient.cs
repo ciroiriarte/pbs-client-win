@@ -88,6 +88,96 @@ public sealed class PbsClient : IDisposable
         return arr.EnumerateArray().Select(e => e.Clone()).ToList();
     }
 
+    /// <summary>Delete (forget) a single snapshot.</summary>
+    public async Task ForgetSnapshotAsync(string backupType, string backupId, long backupTime, CancellationToken ct = default)
+    {
+        var q = SnapshotQuery(backupType, backupId, backupTime);
+        using var resp = await _http.DeleteAsync($"api2/json/admin/datastore/{Store()}/snapshots?{q}", ct);
+        await EnsureOkAsync(resp, "forget", ct);
+    }
+
+    /// <summary>Get the notes attached to a snapshot (empty string if none).</summary>
+    public async Task<string> GetNotesAsync(string backupType, string backupId, long backupTime, CancellationToken ct = default)
+    {
+        var q = SnapshotQuery(backupType, backupId, backupTime);
+        var env = await _http.GetFromJsonAsync<ApiEnvelope<string>>($"api2/json/admin/datastore/{Store()}/notes?{q}", ct);
+        return env?.Data ?? string.Empty;
+    }
+
+    /// <summary>Set the notes attached to a snapshot.</summary>
+    public async Task SetNotesAsync(string backupType, string backupId, long backupTime, string notes, CancellationToken ct = default)
+    {
+        var body = SnapshotBody(backupType, backupId, backupTime);
+        body["notes"] = notes;
+        using var resp = await _http.PutAsJsonAsync($"api2/json/admin/datastore/{Store()}/notes", body, ct);
+        await EnsureOkAsync(resp, "set notes", ct);
+    }
+
+    /// <summary>A single kept/removed entry from a prune run.</summary>
+    public sealed record PruneEntry(long BackupTime, bool Keep);
+
+    /// <summary>
+    /// Prune a backup group by retention (<paramref name="keepOptions"/> keys like <c>keep-last</c>,
+    /// <c>keep-daily</c>…). With <paramref name="dryRun"/> nothing is deleted; the returned list
+    /// still reports what would be kept/removed.
+    /// </summary>
+    public async Task<IReadOnlyList<PruneEntry>> PruneGroupAsync(
+        string backupType, string backupId, IReadOnlyDictionary<string, long> keepOptions, bool dryRun, CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object?>
+        {
+            ["backup-type"] = backupType,
+            ["backup-id"] = backupId,
+            ["dry-run"] = dryRun,
+        };
+        if (!string.IsNullOrEmpty(Options.Namespace)) body["ns"] = Options.Namespace;
+        foreach (var (k, v) in keepOptions) body[k] = v;
+
+        using var resp = await _http.PostAsJsonAsync($"api2/json/admin/datastore/{Store()}/prune", body, ct);
+        var text = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode) throw new HttpRequestException($"prune -> {(int)resp.StatusCode}: {text}");
+        using var doc = JsonDocument.Parse(text);
+        var result = new List<PruneEntry>();
+        if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
+            foreach (var e in data.EnumerateArray())
+                result.Add(new PruneEntry(e.GetProperty("backup-time").GetInt64(),
+                    e.TryGetProperty("keep", out var keep) && keep.GetBoolean()));
+        return result;
+    }
+
+    private string Store() => Uri.EscapeDataString(Options.Datastore ?? throw new InvalidOperationException("datastore required"));
+
+    private string SnapshotQuery(string type, string id, long time)
+    {
+        var parts = new List<string>
+        {
+            "backup-type=" + Uri.EscapeDataString(type),
+            "backup-id=" + Uri.EscapeDataString(id),
+            "backup-time=" + time,
+        };
+        if (!string.IsNullOrEmpty(Options.Namespace)) parts.Add("ns=" + Uri.EscapeDataString(Options.Namespace));
+        return string.Join('&', parts);
+    }
+
+    private Dictionary<string, object?> SnapshotBody(string type, string id, long time)
+    {
+        var body = new Dictionary<string, object?>
+        {
+            ["backup-type"] = type,
+            ["backup-id"] = id,
+            ["backup-time"] = time,
+        };
+        if (!string.IsNullOrEmpty(Options.Namespace)) body["ns"] = Options.Namespace;
+        return body;
+    }
+
+    private static async Task EnsureOkAsync(HttpResponseMessage resp, string what, CancellationToken ct)
+    {
+        if (resp.IsSuccessStatusCode) return;
+        var text = await resp.Content.ReadAsStringAsync(ct);
+        throw new HttpRequestException($"{what} -> {(int)resp.StatusCode}: {text}");
+    }
+
     private static Uri Normalize(Uri baseUrl)
     {
         var s = baseUrl.AbsoluteUri;
