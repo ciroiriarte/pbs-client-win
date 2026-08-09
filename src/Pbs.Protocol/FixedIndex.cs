@@ -50,6 +50,23 @@ public static class FixedIndex
         return buffer;
     }
 
+    /// <summary>
+    /// Compute the <c>index_csum</c> for a fixed index: SHA256 over the concatenated chunk digests.
+    /// This is what PBS expects in <c>fixed_close</c> and recomputes during verify.
+    /// </summary>
+    public static ChunkDigest ComputeCsum(IReadOnlyList<ChunkDigest> digests)
+    {
+        ArgumentNullException.ThrowIfNull(digests);
+        using var csum = SHA256.Create();
+        foreach (var d in digests)
+        {
+            var tmp = d.Span.ToArray();
+            csum.TransformBlock(tmp, 0, tmp.Length, null, 0);
+        }
+        csum.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+        return ChunkDigest.FromBytes(csum.Hash!);
+    }
+
     /// <summary>Parse a fixed index, validating magic and recomputing <c>index_csum</c>.</summary>
     public static (long Size, long ChunkSize, IReadOnlyList<ChunkDigest> Digests) Parse(ReadOnlySpan<byte> data)
     {

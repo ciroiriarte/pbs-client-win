@@ -123,6 +123,58 @@ public sealed class BackupSession : IAsyncDisposable
         _files.Add(new ManifestFile(archiveName, cryptMode, size, indexCsum.ToHex()));
     }
 
+    /// <summary>
+    /// Create a fixed-size index writer for an image archive (e.g. <c>disk.img.fidx</c>), declaring
+    /// the total image <paramref name="size"/> in bytes. Returns the writer id.
+    /// </summary>
+    public async Task<long> CreateFixedIndexAsync(string archiveName, long size, CancellationToken ct = default)
+    {
+        var data = await PostJsonAsync("fixed_index", new Dictionary<string, object>
+        {
+            ["archive-name"] = archiveName,
+            ["size"] = size,
+        }, ct);
+        return data.GetInt64();
+    }
+
+    /// <summary>Upload one fixed chunk (idempotent server-side by digest). Body is a DataBlob.</summary>
+    public async Task UploadFixedChunkAsync(long wid, ChunkRef chunk, byte[] blob, CancellationToken ct = default)
+    {
+        var q = $"fixed_chunk?wid={wid}&digest={chunk.Digest.ToHex()}&size={chunk.Length}&encoded-size={blob.Length}";
+        await PostBinaryAsync(q, blob, ct);
+    }
+
+    /// <summary>Register the ordered chunk list (start byte offsets + digests) into the fixed index.</summary>
+    public async Task AppendFixedIndexAsync(long wid, IReadOnlyList<ChunkRef> chunks, CancellationToken ct = default)
+    {
+        var digestList = new List<string>(chunks.Count);
+        var offsetList = new List<long>(chunks.Count);
+        foreach (var c in chunks)
+        {
+            digestList.Add(c.Digest.ToHex());
+            offsetList.Add(c.Offset);
+        }
+        await PostJsonAsync("fixed_index", new Dictionary<string, object>
+        {
+            ["wid"] = wid,
+            ["digest-list"] = digestList,
+            ["offset-list"] = offsetList,
+        }, ct, HttpMethod.Put);
+    }
+
+    /// <summary>Close a fixed index and record its file in the manifest.</summary>
+    public async Task CloseFixedIndexAsync(string archiveName, long wid, long chunkCount, long size, ChunkDigest indexCsum, string cryptMode = "none", CancellationToken ct = default)
+    {
+        await PostJsonAsync("fixed_close", new Dictionary<string, object>
+        {
+            ["wid"] = wid,
+            ["chunk-count"] = chunkCount,
+            ["size"] = size,
+            ["csum"] = indexCsum.ToHex(),
+        }, ct);
+        _files.Add(new ManifestFile(archiveName, cryptMode, size, indexCsum.ToHex()));
+    }
+
     /// <summary>Upload a standalone blob (raw DataBlob body) under <paramref name="fileName"/>.</summary>
     public async Task UploadBlobAsync(string fileName, byte[] blob, CancellationToken ct = default)
     {

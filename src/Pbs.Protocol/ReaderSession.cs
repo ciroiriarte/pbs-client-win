@@ -75,6 +75,36 @@ public sealed class ReaderSession : IAsyncDisposable
         return total;
     }
 
+    /// <summary>
+    /// Restore a fixed-size (image) archive: download its <c>.fidx</c> index, fetch and decode each
+    /// referenced chunk, and write the reassembled image to <paramref name="output"/>. Returns the
+    /// number of bytes written (the image size recorded in the index).
+    /// </summary>
+    public async Task<long> RestoreFixedArchiveAsync(string archiveName, Stream output, CryptConfig? crypt = null, CancellationToken ct = default)
+    {
+        var indexBytes = await DownloadFileAsync(archiveName, ct);
+        var (size, _, digests) = FixedIndex.Parse(indexBytes);
+
+        long written = 0;
+        var chunkCache = new Dictionary<ChunkDigest, byte[]>();
+        foreach (var digest in digests)
+        {
+            if (!chunkCache.TryGetValue(digest, out var chunk))
+            {
+                chunk = await DownloadChunkAsync(digest, crypt, ct);
+                var actual = crypt is null ? ChunkDigest.Compute(chunk) : ChunkDigest.FromBytes(crypt.ComputeDigest(chunk));
+                if (actual != digest)
+                    throw new InvalidDataException($"restored chunk digest mismatch: index {digest}, data {actual}");
+                chunkCache[digest] = chunk;
+            }
+            await output.WriteAsync(chunk, ct);
+            written += chunk.Length;
+        }
+        if (written != size)
+            throw new InvalidDataException($"restored image size {written} != index size {size}");
+        return written;
+    }
+
     private async Task<byte[]> GetBytesAsync(string path, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, path)
