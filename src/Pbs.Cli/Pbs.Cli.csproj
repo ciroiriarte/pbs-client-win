@@ -2,6 +2,9 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <!-- The shipped binary name; the service, installer, and PATH all expect pbs-client-win.exe. -->
+    <AssemblyName>pbs-client-win</AssemblyName>
+    <RootNamespace>Pbs.Cli</RootNamespace>
     <!-- Linux/macOS build only net8.0. Windows also builds net8.0-windows, which references Pbs.Vss
          and gets real VSS support (the 'WINDOWS' symbol is defined for that target). -->
     <TargetFrameworks>net8.0</TargetFrameworks>
