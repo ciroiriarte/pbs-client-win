@@ -1,4 +1,5 @@
 using System.Reflection;
+using Pbs.Abstractions;
 using Pbs.Cli;
 using Pbs.Protocol;
 using Pbs.Pxar;
@@ -52,25 +53,38 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
     var backupId = flags.GetValueOrDefault("backup-id", Environment.MachineName.ToLowerInvariant());
     var backupTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     var crypt = LoadCrypt(flags);
+    var useVss = flags.ContainsKey("vss");
 
-    await using var session = await BackupSession.OpenAsync(opts, backupType, backupId, backupTime);
-    if (crypt is not null) { session.SetKeyFingerprint(crypt.FingerprintHex()); Console.WriteLine($"  encryption: on (key {crypt.FingerprintHex()[..17]}…)"); }
-    foreach (var spec in specs)
+    // Parse specs upfront so we can snapshot every source volume in one VSS set.
+    var archives = specs.Select(spec =>
     {
         int c = spec.IndexOf(':');
         if (c <= 0) throw new ArgumentException($"invalid archive spec '{spec}' (expected name.pxar:/path)");
-        var name = spec[..c];
-        var path = spec[(c + 1)..];
+        var path = Path.GetFullPath(spec[(c + 1)..]);
         if (!Directory.Exists(path)) throw new ArgumentException($"'{path}' is not a directory (only directory pxar backup is supported)");
+        return (Name: spec[..c], Path: path);
+    }).ToList();
 
+    var volumes = archives.Select(a => Path.GetPathRoot(a.Path) ?? throw new ArgumentException($"no volume root for '{a.Path}'"))
+                          .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    using ISnapshotSource snapshot = CreateSnapshotSource(useVss, volumes);
+    if (useVss) Console.WriteLine($"  VSS: snapshotting {string.Join(", ", volumes)}");
+
+    await using var session = await BackupSession.OpenAsync(opts, backupType, backupId, backupTime);
+    if (crypt is not null) { session.SetKeyFingerprint(crypt.FingerprintHex()); Console.WriteLine($"  encryption: on (key {crypt.FingerprintHex()[..17]}…)"); }
+    foreach (var (name, path) in archives)
+    {
         var stored = StoredArchiveName(name);
+        var readPath = snapshot.Map(path); // live path, or its shadow-copy path under VSS
         using var pxar = new MemoryStream();
-        await PxarEncoder.EncodeAsync(PxarTree.FromDirectory(path), pxar);
+        await PxarEncoder.EncodeAsync(PxarTree.FromDirectory(readPath), pxar);
         Console.WriteLine($"  {name}: {path} -> {stored} ({pxar.Length} bytes)");
         var incremental = !flags.ContainsKey("no-incremental");
         var stats = await DynamicArchive.UploadAsync(session, stored, pxar.ToArray(), crypt: crypt, incremental: incremental);
         Console.WriteLine($"    chunks: {stats.TotalChunks} total, {stats.UploadedChunks} uploaded, {stats.ReusedChunks} reused");
     }
+    snapshot.Complete();
     await session.FinishAsync();
     Console.WriteLine($"backup complete: {backupType}/{backupId}/{backupTime}");
     return 0;
@@ -136,6 +150,16 @@ static PbsConnectionOptions ResolveConnection(Dictionary<string, string> flags)
     };
 }
 
+static ISnapshotSource CreateSnapshotSource(bool useVss, IReadOnlyCollection<string> volumes)
+{
+    if (!useVss) return new IdentitySnapshotSource();
+#if WINDOWS
+    return new Pbs.Vss.VssSnapshotSource(volumes);
+#else
+    throw new PlatformNotSupportedException("--vss requires the Windows build of pbs-client-win");
+#endif
+}
+
 static CryptConfig? LoadCrypt(Dictionary<string, string> flags)
 {
     var keyfile = flags.GetValueOrDefault("keyfile") ?? Environment.GetEnvironmentVariable("PBS_KEYFILE");
@@ -184,7 +208,7 @@ static void PrintUsage(string version)
     Console.WriteLine($"version {version}");
     Console.WriteLine();
     Console.WriteLine("Usage (verbs/flags mirror the upstream proxmox-backup-client where possible):");
-    Console.WriteLine("  pbs-client-win backup <name.pxar>:<dir> [...] --repository <repo> [--ns <ns>] [--backup-id <id>] [--no-incremental]");
+    Console.WriteLine("  pbs-client-win backup <name.pxar>:<dir> [...] --repository <repo> [--ns <ns>] [--backup-id <id>] [--vss] [--no-incremental]");
     Console.WriteLine("  pbs-client-win restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>]");
     Console.WriteLine("  pbs-client-win snapshot list --repository <repo> [--ns <ns>]");
     Console.WriteLine();

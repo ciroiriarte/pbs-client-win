@@ -35,7 +35,7 @@ The sibling repo [`pbs-client`](https://github.com/ciroiriarte/pbs-client) cover
 | File / directory backup (pxar) + restore | **working (M1)** — verified against PBS 4.2.5 |
 | CLI (`backup` / `restore` / `snapshots`) | **working (M1)** |
 | Client-side encryption (AES-256-GCM, `--keyfile`-compatible) | **working (M2)** — official client decrypts it |
-| VSS application-consistent snapshots | planned (M2) — **hard requirement** |
+| VSS application-consistent snapshots (`backup --vss`) | **working (M2)** — captures open/locked files, verified on Windows Server 2022 |
 | Incremental backups (known-chunk reuse) | planned (M2) |
 | Full-disk / bare-metal image backup + restore (`fidx`) | planned (M3) |
 | Windows Service, scheduling, MSI packaging, code signing | planned (M4) |
@@ -55,8 +55,11 @@ export PBS_PASSWORD='<token-secret>'
 export PBS_FINGERPRINT='aa:bb:...'      # for self-signed PBS certs
 
 pbs-client-win backup root.pxar:/path/to/dir --ns my-namespace --backup-id my-host
-pbs-client-win snapshots --ns my-namespace
+pbs-client-win snapshot list --ns my-namespace
 pbs-client-win restore host/my-host/1700000000 root.pxar /restore/target --ns my-namespace
+
+# Windows, application-consistent backup via VSS (captures open/locked files):
+pbs-client-win backup root.pxar:C:\Data --vss --ns my-namespace --backup-id my-host
 
 # encrypted (interoperable with the official client's --keyfile):
 #   proxmox-backup-client key create --kdf none key.json
