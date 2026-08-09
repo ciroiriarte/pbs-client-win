@@ -49,6 +49,28 @@ public sealed class BackupSession : IAsyncDisposable
         return new BackupSession(http, backupType, backupId, backupTimeUnix);
     }
 
+    /// <summary>
+    /// Download the previous snapshot's index for <paramref name="archiveName"/> (raw <c>.didx</c>),
+    /// or null when the group has no previous backup. As a side effect PBS registers the referenced
+    /// chunks as "known", so a subsequent index may reference them without re-uploading their data.
+    /// </summary>
+    public async Task<byte[]?> DownloadPreviousIndexAsync(string archiveName, CancellationToken ct = default)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"previous?archive-name={Uri.EscapeDataString(archiveName)}")
+        {
+            Version = HttpVersion.Version20,
+            VersionPolicy = HttpVersionPolicy.RequestVersionExact,
+        };
+        using var resp = await _http.SendAsync(req, ct);
+        if ((int)resp.StatusCode is >= 400 and < 500) return null; // no previous backup / archive
+        if (!resp.IsSuccessStatusCode)
+        {
+            var text = await resp.Content.ReadAsStringAsync(ct);
+            throw new HttpRequestException($"GET previous -> {(int)resp.StatusCode}: {text}");
+        }
+        return await resp.Content.ReadAsByteArrayAsync(ct);
+    }
+
     /// <summary>Create a dynamic (content-defined) index writer for <paramref name="archiveName"/> (e.g. <c>root.pxar.didx</c>).</summary>
     public async Task<long> CreateDynamicIndexAsync(string archiveName, CancellationToken ct = default)
     {

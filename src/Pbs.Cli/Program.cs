@@ -63,7 +63,9 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
         using var pxar = new MemoryStream();
         await PxarEncoder.EncodeAsync(PxarTree.FromDirectory(path), pxar);
         Console.WriteLine($"  {name}: {path} -> {stored} ({pxar.Length} bytes)");
-        await DynamicArchive.UploadAsync(session, stored, pxar.ToArray(), crypt: crypt);
+        var incremental = !flags.ContainsKey("no-incremental");
+        var stats = await DynamicArchive.UploadAsync(session, stored, pxar.ToArray(), crypt: crypt, incremental: incremental);
+        Console.WriteLine($"    chunks: {stats.TotalChunks} total, {stats.UploadedChunks} uploaded, {stats.ReusedChunks} reused");
     }
     await session.FinishAsync();
     Console.WriteLine($"backup complete: {backupType}/{backupId}/{backupTime}");
