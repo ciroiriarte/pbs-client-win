@@ -20,6 +20,7 @@ public sealed class VssSnapshotSource : ISnapshotSource
 
     private readonly Semaphore _guard;
     private readonly VssSnapshotSet _set;
+    private readonly List<RawVolume> _openVolumes = new();
     private bool _guardHeld;
 
     public VssSnapshotSource(IReadOnlyCollection<string> volumes, TimeSpan? acquireTimeout = null)
@@ -45,10 +46,18 @@ public sealed class VssSnapshotSource : ISnapshotSource
 
     public string Map(string livePath) => _set.MapPath(livePath);
 
+    public (Stream Stream, long Size) OpenImage(string volume)
+    {
+        var raw = new RawVolume(_set.DeviceForVolume(volume));
+        _openVolumes.Add(raw);
+        return (raw.Stream, raw.Length);
+    }
+
     public void Complete() => _set.Complete();
 
     public void Dispose()
     {
+        foreach (var v in _openVolumes) { try { v.Dispose(); } catch { /* best effort */ } }
         try { _set.Dispose(); }
         finally
         {

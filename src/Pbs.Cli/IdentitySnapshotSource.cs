@@ -6,6 +6,10 @@ namespace Pbs.Cli;
 public sealed class IdentitySnapshotSource : ISnapshotSource
 {
     public string Map(string livePath) => livePath;
+
+    public (Stream Stream, long Size) OpenImage(string volume) =>
+        throw new PlatformNotSupportedException("image backup requires --vss on Windows");
+
     public void Complete() { }
     public void Dispose() { }
 }

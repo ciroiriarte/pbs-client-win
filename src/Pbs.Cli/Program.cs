@@ -53,35 +53,50 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
     var backupId = flags.GetValueOrDefault("backup-id", Environment.MachineName.ToLowerInvariant());
     var backupTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     var crypt = LoadCrypt(flags);
-    var useVss = flags.ContainsKey("vss");
+    var imageMode = flags.ContainsKey("image");   // back up whole volumes as fixed images (FIDX)
+    var useVss = flags.ContainsKey("vss") || imageMode; // image backup always needs a snapshot
+    var incremental = !flags.ContainsKey("no-incremental");
 
-    // Parse specs upfront so we can snapshot every source volume in one VSS set.
-    var archives = specs.Select(spec =>
+    var items = specs.Select(spec =>
     {
         int c = spec.IndexOf(':');
-        if (c <= 0) throw new ArgumentException($"invalid archive spec '{spec}' (expected name.pxar:/path)");
-        var path = Path.GetFullPath(spec[(c + 1)..]);
-        if (!Directory.Exists(path)) throw new ArgumentException($"'{path}' is not a directory (only directory pxar backup is supported)");
-        return (Name: spec[..c], Path: path);
+        if (c <= 0) throw new ArgumentException($"invalid archive spec '{spec}' (expected name:target)");
+        return (Name: spec[..c], Target: spec[(c + 1)..]);
     }).ToList();
 
-    var volumes = archives.Select(a => Path.GetPathRoot(a.Path) ?? throw new ArgumentException($"no volume root for '{a.Path}'"))
-                          .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    // The volumes to snapshot: the volume itself in image mode, else each directory's volume root.
+    var volumes = imageMode
+        ? items.Select(i => i.Target).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+        : items.Select(i => Path.GetPathRoot(Path.GetFullPath(i.Target)) ?? throw new ArgumentException($"no volume root for '{i.Target}'"))
+               .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
     using ISnapshotSource snapshot = CreateSnapshotSource(useVss, volumes);
     if (useVss) Console.WriteLine($"  VSS: snapshotting {string.Join(", ", volumes)}");
 
     await using var session = await BackupSession.OpenAsync(opts, backupType, backupId, backupTime);
     if (crypt is not null) { session.SetKeyFingerprint(crypt.FingerprintHex()); Console.WriteLine($"  encryption: on (key {crypt.FingerprintHex()[..17]}…)"); }
-    foreach (var (name, path) in archives)
+    foreach (var (name, target) in items)
     {
-        var stored = StoredArchiveName(name);
-        var readPath = snapshot.Map(path); // live path, or its shadow-copy path under VSS
-        using var pxar = new MemoryStream();
-        await PxarEncoder.EncodeAsync(PxarTree.FromDirectory(readPath), pxar);
-        Console.WriteLine($"  {name}: {path} -> {stored} ({pxar.Length} bytes)");
-        var incremental = !flags.ContainsKey("no-incremental");
-        var stats = await DynamicArchive.UploadAsync(session, stored, pxar.ToArray(), crypt: crypt, incremental: incremental);
+        DynamicArchive.UploadStats stats;
+        string stored;
+        if (imageMode)
+        {
+            stored = StoredImageName(name);
+            var (stream, size) = snapshot.OpenImage(target);
+            Console.WriteLine($"  {name}: {target} -> {stored} ({size} bytes, fixed image)");
+            stats = await FixedImage.UploadAsync(session, stored, stream, size, crypt: crypt, incremental: incremental);
+        }
+        else
+        {
+            var path = Path.GetFullPath(target);
+            if (!Directory.Exists(path)) throw new ArgumentException($"'{path}' is not a directory (use --image to back up a volume)");
+            stored = StoredArchiveName(name);
+            var readPath = snapshot.Map(path); // live path, or its shadow-copy path under VSS
+            using var pxar = new MemoryStream();
+            await PxarEncoder.EncodeAsync(PxarTree.FromDirectory(readPath), pxar);
+            Console.WriteLine($"  {name}: {path} -> {stored} ({pxar.Length} bytes)");
+            stats = await DynamicArchive.UploadAsync(session, stored, pxar.ToArray(), crypt: crypt, incremental: incremental);
+        }
         Console.WriteLine($"    chunks: {stats.TotalChunks} total, {stats.UploadedChunks} uploaded, {stats.ReusedChunks} reused");
     }
     snapshot.Complete();
@@ -97,10 +112,20 @@ static async Task<int> RestoreAsync(List<string> positionals, Dictionary<string,
 
     var opts = ResolveConnection(flags);
     var (type, id, time) = ParseSnapshot(snapshot);
-    var stored = StoredArchiveName(archive);
     var crypt = LoadCrypt(flags);
 
     await using var reader = await ReaderSession.OpenAsync(opts, type, id, time);
+    if (flags.ContainsKey("image"))
+    {
+        // Restore a fixed image straight to a raw file.
+        var storedImg = StoredImageName(archive);
+        await using var file = File.Create(target);
+        var written = await reader.RestoreFixedArchiveAsync(storedImg, file, crypt);
+        Console.WriteLine($"restored {storedImg} -> {target} ({written} bytes, raw image)");
+        return 0;
+    }
+
+    var stored = StoredArchiveName(archive);
     using var buffer = new MemoryStream();
     await reader.RestoreDynamicArchiveAsync(stored, buffer, crypt);
     buffer.Position = 0;
@@ -172,6 +197,11 @@ static string StoredArchiveName(string name) =>
     : name.EndsWith(".pxar") ? name + ".didx"
     : name + ".pxar.didx";
 
+static string StoredImageName(string name) =>
+    name.EndsWith(".fidx") ? name
+    : name.EndsWith(".img") ? name + ".fidx"
+    : name + ".img.fidx";
+
 static (string type, string id, long time) ParseSnapshot(string snapshot)
 {
     var parts = snapshot.Split('/');
@@ -209,6 +239,7 @@ static void PrintUsage(string version)
     Console.WriteLine();
     Console.WriteLine("Usage (verbs/flags mirror the upstream proxmox-backup-client where possible):");
     Console.WriteLine("  pbs-client-win backup <name.pxar>:<dir> [...] --repository <repo> [--ns <ns>] [--backup-id <id>] [--vss] [--no-incremental]");
+    Console.WriteLine("  pbs-client-win backup <name.img>:<volume> --image --repository <repo> [--ns <ns>]   (Windows; whole-volume image via VSS)");
     Console.WriteLine("  pbs-client-win restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>]");
     Console.WriteLine("  pbs-client-win snapshot list --repository <repo> [--ns <ns>]");
     Console.WriteLine();

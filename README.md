@@ -37,7 +37,7 @@ The sibling repo [`pbs-client`](https://github.com/ciroiriarte/pbs-client) cover
 | Client-side encryption (AES-256-GCM, `--keyfile`-compatible) | **working (M2)** — official client decrypts it |
 | VSS application-consistent snapshots (`backup --vss`) | **working (M2)** — captures open/locked files, verified on Windows Server 2022 |
 | Incremental backups (known-chunk reuse) | planned (M2) |
-| Full-disk / bare-metal image backup + restore (`fidx`) | planned (M3) |
+| Full-disk / bare-metal image backup + restore (`backup --image`, FIDX) | **working (M3)** — VSS volume image, verified on Windows |
 | Windows Service, scheduling, MSI packaging, code signing | planned (M4) |
 | MSSQL application-aware backup (VSS Writer → SQL VDI/SMO) | planned (M5) |
 
@@ -60,6 +60,10 @@ pbs-client-win restore host/my-host/1700000000 root.pxar /restore/target --ns my
 
 # Windows, application-consistent backup via VSS (captures open/locked files):
 pbs-client-win backup root.pxar:C:\Data --vss --ns my-namespace --backup-id my-host
+
+# Windows, whole-volume image backup via VSS (FIDX), and restore to a raw image:
+pbs-client-win backup disk0.img:C: --image --ns my-namespace --backup-id my-host
+pbs-client-win restore host/my-host/1700000000 disk0.img /restore/disk0.img --image --ns my-namespace
 
 # encrypted (interoperable with the official client's --keyfile):
 #   proxmox-backup-client key create --kdf none key.json

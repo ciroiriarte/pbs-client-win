@@ -10,6 +10,13 @@ public interface ISnapshotSource : IDisposable
     /// <summary>Translate a live path to the path to read (identity, or its shadow-copy path).</summary>
     string Map(string livePath);
 
+    /// <summary>
+    /// Open a whole volume (e.g. <c>C:</c>) as a raw image stream plus its size in bytes — used for
+    /// full-disk image backup. Only meaningful for a real snapshot source (VSS); the identity source
+    /// does not support it.
+    /// </summary>
+    (Stream Stream, long Size) OpenImage(string volume);
+
     /// <summary>Signal that reading finished successfully (lets writers finalize, e.g. truncate logs).</summary>
     void Complete();
 }

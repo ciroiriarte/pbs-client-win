@@ -41,7 +41,7 @@ public static class FixedImage
         while (offset < size)
         {
             int want = (int)Math.Min(chunkSize, size - offset);
-            await ReadExactAsync(source, buffer, want, ct);
+            await ReadBlockAsync(source, buffer, want, ct);
             var slice = buffer.AsSpan(0, want).ToArray();
 
             var digest = crypt is null
@@ -69,13 +69,17 @@ public static class FixedImage
         return new DynamicArchive.UploadStats(chunks.Count, uploaded, reused);
     }
 
-    private static async Task ReadExactAsync(Stream source, byte[] buffer, int count, CancellationToken ct)
+    // Fill one block from the source; if the source ends before the block is full, zero-pad the
+    // rest. Volume images declare the full partition size, but a VSS shadow can expose slightly
+    // fewer bytes (the final cluster) — that tail is backed up as zeros, keeping the image the
+    // declared size. Zero regions dedup to a single chunk on the server.
+    private static async Task ReadBlockAsync(Stream source, byte[] buffer, int count, CancellationToken ct)
     {
         int read = 0;
         while (read < count)
         {
             int n = await source.ReadAsync(buffer.AsMemory(read, count - read), ct);
-            if (n == 0) throw new EndOfStreamException("image source ended before the declared size");
+            if (n == 0) { Array.Clear(buffer, read, count - read); return; }
             read += n;
         }
     }
