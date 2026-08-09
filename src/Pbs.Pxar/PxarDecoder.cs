@@ -16,13 +16,20 @@ public sealed class PxarDecoder
     private const ulong ModeLnk = 0xA000;
 
     private readonly Stream _in;
-    private PxarDecoder(Stream input) => _in = input;
+    private readonly string _root; // canonical extraction root; nothing may be written outside it
+
+    private PxarDecoder(Stream input, string root)
+    {
+        _in = input;
+        _root = root;
+    }
 
     /// <summary>Extract the archive in <paramref name="input"/> into <paramref name="targetDir"/>.</summary>
     public static async Task ExtractAsync(Stream input, string targetDir, CancellationToken ct = default)
     {
-        Directory.CreateDirectory(targetDir);
-        var dec = new PxarDecoder(input);
+        var root = Path.GetFullPath(targetDir);
+        Directory.CreateDirectory(root);
+        var dec = new PxarDecoder(input, root);
 
         var (htype, _) = await dec.ReadHeaderAsync(ct);
         if (htype == PxarFormat.FormatVersion)
@@ -69,6 +76,8 @@ public sealed class PxarDecoder
                 if (lh != PxarFormat.Symlink)
                     throw new InvalidDataException($"pxar: expected SYMLINK, got htype {lh:x16}");
                 var target = await ReadNameAsync(ls, ct);
+                if (!IsSafeSymlinkTarget(path, target))
+                    throw new InvalidDataException($"pxar: unsafe symlink target '{target}' -> escapes extraction root");
                 try { File.CreateSymbolicLink(path, target); } catch (IOException) { /* privilege/plat limits */ }
             }
             else // regular file
@@ -79,6 +88,27 @@ public sealed class PxarDecoder
                 await ExtractPayloadAsync(path, ps - PxarFormat.HeaderSize, ct);
             }
         }
+    }
+
+    /// <summary>
+    /// A symlink target is safe only if it is relative and, resolved against the link's own
+    /// directory, still points inside the extraction root. Absolute/rooted (incl. drive and UNC)
+    /// targets are rejected outright. This stops a malicious archive from planting a link that a
+    /// later entry writes through to escape the target directory.
+    /// </summary>
+    private bool IsSafeSymlinkTarget(string linkPath, string target)
+    {
+        if (string.IsNullOrEmpty(target) || Path.IsPathRooted(target)) return false;
+        var linkDir = Path.GetDirectoryName(linkPath)!;
+        var resolved = Path.GetFullPath(Path.Combine(linkDir, target));
+        return IsWithinRoot(resolved);
+    }
+
+    private bool IsWithinRoot(string fullPath)
+    {
+        var rootWithSep = _root.EndsWith(Path.DirectorySeparatorChar) ? _root : _root + Path.DirectorySeparatorChar;
+        return string.Equals(fullPath, _root, StringComparison.Ordinal) ||
+               fullPath.StartsWith(rootWithSep, StringComparison.Ordinal);
     }
 
     private async Task ExtractPayloadAsync(string path, long length, CancellationToken ct)
