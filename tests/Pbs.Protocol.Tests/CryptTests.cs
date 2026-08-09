@@ -74,3 +74,52 @@ public class CryptConfigTests
         Assert.Throws<ArgumentException>(() => new CryptConfig(new byte[16]));
     }
 }
+
+public class KeyFileTests
+{
+    // A real scrypt (password-protected) keyfile from `key create --kdf scrypt` with passphrase
+    // "testpass123" — decrypting it must reproduce the fingerprint the official client recorded.
+    private const string ScryptKeyfile =
+        """{"kdf":{"Scrypt":{"n":65536,"r":8,"p":1,"salt":"eUYcxDwGWxY6051BHG8GogCf6XtedkL/p3tT76AWTDg="}},"created":"2026-08-09T10:23:00-03:00","modified":"2026-08-09T10:23:00-03:00","data":"h9+xSgsSiC1rU4026vAAKTU3YcZUq2nCtMNk33gelFuJftLqi+rw4K1VOhyzwJ0mX7xXvM3URUJbthWsyHf8Mg==","fingerprint":"cc:d2:df:89:cc:4a:e7:71:3e:11:ea:5b:d3:a9:8c:99:bd:d7:15:6f:ec:5e:dc:c2:b4:4a:1c:d1:1f:ba:3b:da"}""";
+    private const string Passphrase = "testpass123";
+    private const string ExpectedFingerprint =
+        "cc:d2:df:89:cc:4a:e7:71:3e:11:ea:5b:d3:a9:8c:99:bd:d7:15:6f:ec:5e:dc:c2:b4:4a:1c:d1:1f:ba:3b:da";
+
+    [Fact]
+    public void ScryptKeyfile_DecryptsToKey_MatchingFingerprint()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, ScryptKeyfile);
+            var key = KeyFile.LoadRawKey(path, Passphrase);
+            Assert.Equal(32, key.Length);
+            Assert.Equal(ExpectedFingerprint, new CryptConfig(key).FingerprintHex());
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void ScryptKeyfile_WrongPassphrase_Throws()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, ScryptKeyfile);
+            Assert.ThrowsAny<Exception>(() => KeyFile.LoadRawKey(path, "wrong-password"));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void ProtectedKeyfile_NoPassphrase_Throws()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, ScryptKeyfile);
+            Assert.Throws<ArgumentException>(() => KeyFile.LoadRawKey(path, null));
+        }
+        finally { File.Delete(path); }
+    }
+}

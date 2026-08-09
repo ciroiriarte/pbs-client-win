@@ -313,7 +313,8 @@ static CryptConfig? LoadCrypt(Dictionary<string, string> flags)
 {
     var keyfile = flags.GetValueOrDefault("keyfile") ?? Environment.GetEnvironmentVariable("PBS_KEYFILE");
     if (string.IsNullOrEmpty(keyfile)) return null;
-    return new CryptConfig(KeyFile.LoadRawKey(keyfile));
+    var passphrase = flags.GetValueOrDefault("key-password") ?? Environment.GetEnvironmentVariable("PBS_ENCRYPTION_PASSWORD");
+    return new CryptConfig(KeyFile.LoadRawKey(keyfile, passphrase));
 }
 
 static string StoredArchiveName(string name) =>
