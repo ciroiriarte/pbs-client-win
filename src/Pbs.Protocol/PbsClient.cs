@@ -88,6 +88,23 @@ public sealed class PbsClient : IDisposable
         return arr.EnumerateArray().Select(e => e.Clone()).ToList();
     }
 
+    /// <summary>
+    /// Create a namespace in the datastore. <paramref name="fullNamespace"/> may be nested
+    /// (<c>a/b/c</c>); the parent is created-into and the final component is the new namespace.
+    /// </summary>
+    public async Task CreateNamespaceAsync(string fullNamespace, CancellationToken ct = default)
+    {
+        var trimmed = fullNamespace.Trim('/');
+        int slash = trimmed.LastIndexOf('/');
+        var parent = slash < 0 ? string.Empty : trimmed[..slash];
+        var name = slash < 0 ? trimmed : trimmed[(slash + 1)..];
+
+        var body = new Dictionary<string, object?> { ["name"] = name };
+        if (parent.Length > 0) body["parent"] = parent;
+        using var resp = await _http.PostAsJsonAsync($"api2/json/admin/datastore/{Store()}/namespace", body, ct);
+        await EnsureOkAsync(resp, "namespace create", ct);
+    }
+
     /// <summary>Delete (forget) a single snapshot.</summary>
     public async Task ForgetSnapshotAsync(string backupType, string backupId, long backupTime, CancellationToken ct = default)
     {

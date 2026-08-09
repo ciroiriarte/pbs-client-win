@@ -30,19 +30,22 @@ public sealed class PxarSymlinkNode : PxarNode
 /// <summary>Builds a <see cref="PxarDirNode"/> tree from a real filesystem directory.</summary>
 public static class PxarTree
 {
-    public static PxarDirNode FromDirectory(string path)
+    public static PxarDirNode FromDirectory(string path, PxarExcludes? excludes = null)
     {
         var info = new DirectoryInfo(path);
         if (!info.Exists) throw new DirectoryNotFoundException(path);
         var root = new PxarDirNode { Name = string.Empty, MtimeSecs = ToUnix(info.LastWriteTimeUtc, out var n), MtimeNanos = n };
-        Populate(root, info);
+        Populate(root, info, info.FullName, excludes);
         return root;
     }
 
-    private static void Populate(PxarDirNode dir, DirectoryInfo info)
+    private static void Populate(PxarDirNode dir, DirectoryInfo info, string rootFull, PxarExcludes? excludes)
     {
         foreach (var entry in info.EnumerateFileSystemInfos())
         {
+            if (excludes is { IsEmpty: false } && excludes.IsExcluded(Path.GetRelativePath(rootFull, entry.FullName), entry.Name))
+                continue;
+
             long secs = ToUnix(entry.LastWriteTimeUtc, out var nanos);
             if ((entry.Attributes & FileAttributes.ReparsePoint) != 0 && entry.LinkTarget is { } target)
             {
@@ -51,7 +54,7 @@ public static class PxarTree
             else if (entry is DirectoryInfo di)
             {
                 var child = new PxarDirNode { Name = entry.Name, MtimeSecs = secs, MtimeNanos = nanos };
-                Populate(child, di);
+                Populate(child, di, rootFull, excludes);
                 dir.Children.Add(child);
             }
             else if (entry is FileInfo fi)

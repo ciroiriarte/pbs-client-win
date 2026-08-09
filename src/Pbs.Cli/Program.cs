@@ -14,14 +14,14 @@ try
         return 0;
     }
 
-    var (positionals, flags) = ParseArgs(args[1..]);
+    var (positionals, flags, multi) = ParseArgs(args[1..]);
     switch (args[0])
     {
         case "version" or "--version":
             Console.WriteLine(version);
             return 0;
         case "backup":
-            return await BackupAsync(positionals, flags);
+            return await BackupAsync(positionals, flags, multi);
         case "restore":
             return await RestoreAsync(positionals, flags);
         case "snapshot" when positionals is ["list", ..]:
@@ -36,6 +36,11 @@ try
             return 1;
         case "prune":
             return await PruneAsync(positionals, flags);
+        case "namespace" when positionals is ["create", var ns, ..]:
+            return await NamespaceCreateAsync(ns, flags);
+        case "namespace":
+            Console.Error.WriteLine("usage: pbs-client-win namespace create <namespace> --repository <repo>");
+            return 1;
         default:
             Console.Error.WriteLine($"unknown command: {args[0]}");
             Console.Error.WriteLine("run 'pbs-client-win --help' for usage");
@@ -50,7 +55,7 @@ catch (Exception ex)
 
 // ---- commands ----
 
-static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string> flags)
+static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string> flags, ILookup<string, string> multi)
 {
     if (specs.Count == 0) { Console.Error.WriteLine("backup: expected at least one <name.pxar>:<dir>"); return 1; }
 
@@ -62,6 +67,8 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
     var imageMode = flags.ContainsKey("image");   // back up whole volumes as fixed images (FIDX)
     var useVss = flags.ContainsKey("vss") || imageMode; // image backup always needs a snapshot
     var incremental = !flags.ContainsKey("no-incremental");
+    var excludes = new PxarExcludes(multi["exclude"]); // --exclude glob patterns (file backup only)
+    if (!excludes.IsEmpty) Console.WriteLine($"  excludes: {string.Join(", ", multi["exclude"])}");
 
     var items = specs.Select(spec =>
     {
@@ -99,7 +106,7 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
             stored = StoredArchiveName(name);
             var readPath = snapshot.Map(path); // live path, or its shadow-copy path under VSS
             using var pxar = new MemoryStream();
-            await PxarEncoder.EncodeAsync(PxarTree.FromDirectory(readPath), pxar);
+            await PxarEncoder.EncodeAsync(PxarTree.FromDirectory(readPath, excludes), pxar);
             Console.WriteLine($"  {name}: {path} -> {stored} ({pxar.Length} bytes)");
             stats = await DynamicArchive.UploadAsync(session, stored, pxar.ToArray(), crypt: crypt, incremental: incremental);
         }
@@ -145,6 +152,11 @@ static async Task<int> SnapshotsAsync(Dictionary<string, string> flags)
     var opts = ResolveConnection(flags);
     using var client = PbsClient.Create(opts);
     var snapshots = await client.ListSnapshotsAsync();
+    if (flags.GetValueOrDefault("output-format") == "json")
+    {
+        Console.WriteLine("[" + string.Join(",", snapshots.Select(s => s.GetRawText())) + "]");
+        return 0;
+    }
     foreach (var s in snapshots)
     {
         var t = s.GetProperty("backup-type").GetString();
@@ -201,6 +213,15 @@ static async Task<int> PruneAsync(List<string> positionals, Dictionary<string, s
     foreach (var e in entries.OrderByDescending(e => e.BackupTime))
         Console.WriteLine($"  {(e.Keep ? "keep  " : "remove")} {parts[0]}/{parts[1]}/{e.BackupTime}");
     Console.WriteLine($"{(dryRun ? "[dry-run] " : "")}{entries.Count(e => !e.Keep)} removed, {entries.Count(e => e.Keep)} kept");
+    return 0;
+}
+
+static async Task<int> NamespaceCreateAsync(string ns, Dictionary<string, string> flags)
+{
+    var opts = ResolveConnection(flags);
+    using var client = PbsClient.Create(opts);
+    await client.CreateNamespaceAsync(ns);
+    Console.WriteLine($"created namespace {ns}");
     return 0;
 }
 
@@ -266,24 +287,29 @@ static (string type, string id, long time) ParseSnapshot(string snapshot)
     return (parts[0], parts[1], time);
 }
 
-static (List<string> positionals, Dictionary<string, string> flags) ParseArgs(string[] args)
+static (List<string> positionals, Dictionary<string, string> flags, ILookup<string, string> multi) ParseArgs(string[] args)
 {
     var positionals = new List<string>();
-    var flags = new Dictionary<string, string>(StringComparer.Ordinal);
+    var pairs = new List<KeyValuePair<string, string>>();
     for (int i = 0; i < args.Length; i++)
     {
         var a = args[i];
         if (a.StartsWith("--"))
         {
             var key = a[2..];
+            string val;
             int eq = key.IndexOf('=');
-            if (eq >= 0) { flags[key[..eq]] = key[(eq + 1)..]; }
-            else if (i + 1 < args.Length && !args[i + 1].StartsWith("--")) { flags[key] = args[++i]; }
-            else { flags[key] = "true"; }
+            if (eq >= 0) { val = key[(eq + 1)..]; key = key[..eq]; }
+            else if (i + 1 < args.Length && !args[i + 1].StartsWith("--")) { val = args[++i]; }
+            else { val = "true"; }
+            pairs.Add(new KeyValuePair<string, string>(key, val));
         }
         else positionals.Add(a);
     }
-    return (positionals, flags);
+    // flags = last value wins per key; multi = all values per key (for repeatable flags like --exclude)
+    var flags = pairs.GroupBy(p => p.Key, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Last().Value, StringComparer.Ordinal);
+    var multi = pairs.ToLookup(p => p.Key, p => p.Value, StringComparer.Ordinal);
+    return (positionals, flags, multi);
 }
 
 static void PrintUsage(string version)
@@ -299,6 +325,10 @@ static void PrintUsage(string version)
     Console.WriteLine("  pbs-client-win snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");
     Console.WriteLine("  pbs-client-win snapshot notes <type/id/time> [text] --repository <repo> [--ns <ns>]");
     Console.WriteLine("  pbs-client-win prune <type/id> --keep-last N [--keep-daily N ...] [--dry-run] --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  pbs-client-win namespace create <namespace> --repository <repo>");
+    Console.WriteLine();
+    Console.WriteLine("backup file mode also accepts repeatable --exclude <glob> (e.g. --exclude *.tmp --exclude /logs/**).");
+    Console.WriteLine("snapshot list accepts --output-format json.");
     Console.WriteLine();
     Console.WriteLine("Repository: [AUTHID@]HOST[:PORT]:DATASTORE  (e.g. root@pam!tok@pbs.example:store01)");
     Console.WriteLine("Credentials: --password/PBS_PASSWORD (token secret), --fingerprint/PBS_FINGERPRINT.");
