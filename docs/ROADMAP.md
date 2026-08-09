@@ -52,3 +52,28 @@ real Proxmox Backup Server (PBS 4.2.5), and where noted, against the official `p
 - Manifest signing (backups are encrypted but the manifest is not signed; official restore accepts
   this today).
 - Defense-in-depth on restore: refuse to follow pre-existing on-disk symlinks during extraction.
+
+## Operational hardening (TODO — mostly M4 install/design)
+
+- **Multi-VSS-client coordination.** On a Windows guest, VSS can be driven concurrently by (1)
+  PVE's host-level VM backup via the QEMU guest agent's fs-freeze/VSS, (2) this in-guest PBS client,
+  and (3) app-triggered backups (e.g. the MSSQL VSS writer). Overlaps cause "a shadow copy operation
+  is already in progress" failures and can corrupt writer/log-chain state. Plan: a **global named
+  mutex** (single-instance guard), graceful "VSS busy" detection + back-off/retry, guidance to
+  offset schedules vs PVE-level backups (and possibly detect an in-progress host backup), and
+  careful SQL-writer component selection so we don't fight SQL's own backups. Ref:
+  https://pve.proxmox.com/wiki/VM_Backup_Consistency
+- **Antivirus on-access exclusions.** On-access scanning fights backup agents (the community Go
+  client reports ~25% slowdown under Defender). There is no universal cross-AV "I am a backup app"
+  declaration, so the installer should add **Windows Defender exclusions** (the client process via
+  `Add-MpPreference -ExclusionProcess`, plus any snapshot/working paths) and **document exclusion
+  steps for third-party AVs**. Compounds with the code-signing/SmartScreen work (SignPath).
+
+## Test matrix (TODO)
+
+Once VSS + packaging land, test across the Windows templates available in the test PVE:
+- Versions: **Windows Server 2019 / 2022 / 2025**
+- Editions: **Core** and **Desktop Experience**
+- Locales: **en-US** and **es-ES** (Korean/ko-KR dropped — no template available)
+
+Locale coverage matters for path/encoding correctness in pxar (non-ASCII filenames).

@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows-only. Deliberately NOT part of PbsClientWin.sln so the cross-platform build/tests keep
+    working on Linux/macOS. The Windows CI job builds and tests this project explicitly.
+    VSS is a COM API; AlphaVSS is a managed requestor wrapper over IVssBackupComponents.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AlphaVSS" Version="2.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pbs.Abstractions\Pbs.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>
