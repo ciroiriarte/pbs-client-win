@@ -36,19 +36,23 @@ public sealed class ReaderSession : IAsyncDisposable
     public Task<byte[]> DownloadFileAsync(string fileName, CancellationToken ct = default) =>
         GetBytesAsync($"download?file-name={Uri.EscapeDataString(fileName)}", ct);
 
-    /// <summary>Download and decode a single chunk (server returns its DataBlob).</summary>
-    public async Task<byte[]> DownloadChunkAsync(ChunkDigest digest, CancellationToken ct = default)
+    /// <summary>
+    /// Download and decode a single chunk. With <paramref name="crypt"/> the chunk is an encrypted
+    /// DataBlob and is decrypted; otherwise it is a plaintext DataBlob.
+    /// </summary>
+    public async Task<byte[]> DownloadChunkAsync(ChunkDigest digest, CryptConfig? crypt = null, CancellationToken ct = default)
     {
         var blob = await GetBytesAsync($"chunk?digest={digest.ToHex()}", ct);
-        return DataBlob.Decode(blob);
+        return crypt is null ? DataBlob.Decode(blob) : crypt.DecryptBlob(blob);
     }
 
     /// <summary>
     /// Restore a whole dynamic archive: download its <c>.didx</c> index, then fetch and decode each
     /// referenced chunk in order, writing the reassembled plaintext to <paramref name="output"/>.
-    /// Verifies each chunk's SHA-256 against the index digest.
+    /// Each chunk's digest is re-verified against the index (plain SHA-256, or the keyed digest
+    /// when <paramref name="crypt"/> is supplied).
     /// </summary>
-    public async Task<long> RestoreDynamicArchiveAsync(string archiveName, Stream output, CancellationToken ct = default)
+    public async Task<long> RestoreDynamicArchiveAsync(string archiveName, Stream output, CryptConfig? crypt = null, CancellationToken ct = default)
     {
         var indexBytes = await DownloadFileAsync(archiveName, ct);
         var entries = DynamicIndex.Parse(indexBytes);
@@ -59,8 +63,8 @@ public sealed class ReaderSession : IAsyncDisposable
         {
             if (!chunkCache.TryGetValue(entry.Digest, out var chunk))
             {
-                chunk = await DownloadChunkAsync(entry.Digest, ct);
-                var actual = ChunkDigest.Compute(chunk);
+                chunk = await DownloadChunkAsync(entry.Digest, crypt, ct);
+                var actual = crypt is null ? ChunkDigest.Compute(chunk) : ChunkDigest.FromBytes(crypt.ComputeDigest(chunk));
                 if (actual != entry.Digest)
                     throw new InvalidDataException($"restored chunk digest mismatch: index {entry.Digest}, data {actual}");
                 chunkCache[entry.Digest] = chunk;

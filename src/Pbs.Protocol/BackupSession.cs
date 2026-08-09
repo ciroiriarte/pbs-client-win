@@ -24,6 +24,7 @@ public sealed class BackupSession : IAsyncDisposable
 
     private readonly HttpClient _http;
     private readonly List<ManifestFile> _files = new();
+    private string? _keyFingerprint;
 
     public string BackupType { get; }
     public string BackupId { get; }
@@ -84,8 +85,11 @@ public sealed class BackupSession : IAsyncDisposable
         }, ct, HttpMethod.Put);
     }
 
+    /// <summary>Record the key fingerprint stored in the manifest for encrypted backups.</summary>
+    public void SetKeyFingerprint(string fingerprint) => _keyFingerprint = fingerprint;
+
     /// <summary>Close a dynamic index and record its file in the manifest.</summary>
-    public async Task CloseDynamicIndexAsync(string archiveName, long wid, long chunkCount, long size, ChunkDigest indexCsum, CancellationToken ct = default)
+    public async Task CloseDynamicIndexAsync(string archiveName, long wid, long chunkCount, long size, ChunkDigest indexCsum, string cryptMode = "none", CancellationToken ct = default)
     {
         await PostJsonAsync("dynamic_close", new Dictionary<string, object>
         {
@@ -94,7 +98,7 @@ public sealed class BackupSession : IAsyncDisposable
             ["size"] = size,
             ["csum"] = indexCsum.ToHex(),
         }, ct);
-        _files.Add(new ManifestFile(archiveName, "none", size, indexCsum.ToHex()));
+        _files.Add(new ManifestFile(archiveName, cryptMode, size, indexCsum.ToHex()));
     }
 
     /// <summary>Upload a standalone blob (raw DataBlob body) under <paramref name="fileName"/>.</summary>
@@ -119,7 +123,9 @@ public sealed class BackupSession : IAsyncDisposable
                 ["size"] = f.Size,
                 ["csum"] = f.Csum,
             }).ToList(),
-            ["unprotected"] = new Dictionary<string, object?>(),
+            ["unprotected"] = _keyFingerprint is null
+                ? new Dictionary<string, object?>()
+                : new Dictionary<string, object?> { ["key-fingerprint"] = _keyFingerprint },
         };
         var json = JsonSerializer.SerializeToUtf8Bytes(manifest, new JsonSerializerOptions { WriteIndented = true });
         var blob = DataBlob.Encode(json, compress: true);

@@ -47,8 +47,10 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
     var backupType = flags.GetValueOrDefault("backup-type", "host");
     var backupId = flags.GetValueOrDefault("backup-id", Environment.MachineName.ToLowerInvariant());
     var backupTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    var crypt = LoadCrypt(flags);
 
     await using var session = await BackupSession.OpenAsync(opts, backupType, backupId, backupTime);
+    if (crypt is not null) { session.SetKeyFingerprint(crypt.FingerprintHex()); Console.WriteLine($"  encryption: on (key {crypt.FingerprintHex()[..17]}…)"); }
     foreach (var spec in specs)
     {
         int c = spec.IndexOf(':');
@@ -61,7 +63,7 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
         using var pxar = new MemoryStream();
         await PxarEncoder.EncodeAsync(PxarTree.FromDirectory(path), pxar);
         Console.WriteLine($"  {name}: {path} -> {stored} ({pxar.Length} bytes)");
-        await DynamicArchive.UploadAsync(session, stored, pxar.ToArray());
+        await DynamicArchive.UploadAsync(session, stored, pxar.ToArray(), crypt: crypt);
     }
     await session.FinishAsync();
     Console.WriteLine($"backup complete: {backupType}/{backupId}/{backupTime}");
@@ -76,10 +78,11 @@ static async Task<int> RestoreAsync(List<string> positionals, Dictionary<string,
     var opts = ResolveConnection(flags);
     var (type, id, time) = ParseSnapshot(snapshot);
     var stored = StoredArchiveName(archive);
+    var crypt = LoadCrypt(flags);
 
     await using var reader = await ReaderSession.OpenAsync(opts, type, id, time);
     using var buffer = new MemoryStream();
-    await reader.RestoreDynamicArchiveAsync(stored, buffer);
+    await reader.RestoreDynamicArchiveAsync(stored, buffer, crypt);
     buffer.Position = 0;
     await PxarDecoder.ExtractAsync(buffer, target);
     Console.WriteLine($"restored {stored} -> {target} ({buffer.Length} bytes)");
@@ -125,6 +128,13 @@ static PbsConnectionOptions ResolveConnection(Dictionary<string, string> flags)
         Datastore = repo.Datastore,
         Namespace = ns,
     };
+}
+
+static CryptConfig? LoadCrypt(Dictionary<string, string> flags)
+{
+    var keyfile = flags.GetValueOrDefault("keyfile") ?? Environment.GetEnvironmentVariable("PBS_KEYFILE");
+    if (string.IsNullOrEmpty(keyfile)) return null;
+    return new CryptConfig(KeyFile.LoadRawKey(keyfile));
 }
 
 static string StoredArchiveName(string name) =>
@@ -174,4 +184,6 @@ static void PrintUsage(string version)
     Console.WriteLine();
     Console.WriteLine("Repository: [AUTHID@]HOST[:PORT]:DATASTORE  (e.g. root@pam!tok@pbs.example:store01)");
     Console.WriteLine("Credentials: --password/PBS_PASSWORD (token secret), --fingerprint/PBS_FINGERPRINT.");
+    Console.WriteLine("Encryption: --keyfile/PBS_KEYFILE (a 'key create --kdf none' keyfile); AES-256-GCM,");
+    Console.WriteLine("            interoperable with the official client's --keyfile.");
 }
