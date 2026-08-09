@@ -5,8 +5,17 @@ from scratch in **C# / .NET 8**. It produces **PBS-wire-compatible** backups (ch
 `fidx`/`didx` indexes, manifest, client-side encryption) so snapshots are listed, verified, and
 restored by an unmodified Proxmox Backup Server.
 
-> "Proxmox" is a trademark of Proxmox Server Solutions GmbH. This project is community-maintained
-> and **not endorsed by Proxmox**. Licensed **AGPL-3.0-or-later**.
+> ## ⚠️ Not affiliated with Proxmox
+>
+> This is an **independent, community-maintained** project. It is **not produced by, endorsed by,
+> or affiliated with Proxmox Server Solutions GmbH** in any way. **"Proxmox" and "Proxmox Backup
+> Server" are trademarks of Proxmox Server Solutions GmbH**, used here only to describe
+> interoperability. This client is a clean-room reimplementation of the wire protocol; it ships no
+> Proxmox code. No warranty — see the licence. Licensed **AGPL-3.0-or-later**.
+>
+> The CLI verbs, flags, and (planned) installer/service intentionally **resemble the upstream
+> `proxmox-backup-client`** for familiarity, but this project is separate and its repository is not
+> aligned with upstream's.
 
 ## Why this exists
 

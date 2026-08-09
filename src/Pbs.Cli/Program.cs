@@ -23,8 +23,12 @@ try
             return await BackupAsync(positionals, flags);
         case "restore":
             return await RestoreAsync(positionals, flags);
-        case "snapshots":
+        case "snapshot" when positionals is ["list", ..]:
+        case "snapshots": // alias
             return await SnapshotsAsync(flags);
+        case "snapshot":
+            Console.Error.WriteLine("usage: pbs-client-win snapshot list --repository <repo> [--ns <ns>]");
+            return 1;
         default:
             Console.Error.WriteLine($"unknown command: {args[0]}");
             Console.Error.WriteLine("run 'pbs-client-win --help' for usage");
@@ -179,13 +183,16 @@ static void PrintUsage(string version)
     Console.WriteLine("pbs-client-win — Proxmox Backup client for Windows");
     Console.WriteLine($"version {version}");
     Console.WriteLine();
-    Console.WriteLine("Usage:");
-    Console.WriteLine("  pbs-client-win backup <name.pxar>:<dir> [...] --repository <repo> [--ns <ns>] [--backup-id <id>]");
+    Console.WriteLine("Usage (verbs/flags mirror the upstream proxmox-backup-client where possible):");
+    Console.WriteLine("  pbs-client-win backup <name.pxar>:<dir> [...] --repository <repo> [--ns <ns>] [--backup-id <id>] [--no-incremental]");
     Console.WriteLine("  pbs-client-win restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>]");
-    Console.WriteLine("  pbs-client-win snapshots --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  pbs-client-win snapshot list --repository <repo> [--ns <ns>]");
     Console.WriteLine();
     Console.WriteLine("Repository: [AUTHID@]HOST[:PORT]:DATASTORE  (e.g. root@pam!tok@pbs.example:store01)");
     Console.WriteLine("Credentials: --password/PBS_PASSWORD (token secret), --fingerprint/PBS_FINGERPRINT.");
     Console.WriteLine("Encryption: --keyfile/PBS_KEYFILE (a 'key create --kdf none' keyfile); AES-256-GCM,");
     Console.WriteLine("            interoperable with the official client's --keyfile.");
+    Console.WriteLine();
+    Console.WriteLine("This is an independent, community project. It is NOT produced, endorsed by, or");
+    Console.WriteLine("affiliated with Proxmox Server Solutions GmbH. \"Proxmox\" is their trademark.");
 }
