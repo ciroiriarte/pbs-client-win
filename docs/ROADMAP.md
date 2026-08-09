@@ -36,10 +36,12 @@ Done: `backup` (file/pxar, image/fidx, `--vss`, `--exclude`, incremental, encryp
 `key create` and encrypted backup with `--keyfile` (kdf none + scrypt) — all verified
 interoperable with the official client where applicable.
 
+Also done: **catalog** (`.pcat1` upload + `catalog dump`, byte-compatible — the official
+`proxmox-backup-client catalog dump` reads our catalog and vice versa) and **selective restore**
+(`restore --pattern <glob>`).
+
 Remaining vs the official client:
-- **catalog** (`.pcat1` upload + `catalog dump`/`shell`) — faster PBS-UI/CLI file browsing
-  (pxar is already browsable via its goodbye tables; the catalog is an optimization).
-- **selective restore** — restore a subset of paths from a pxar (we currently extract the whole archive).
+- **catalog shell** (interactive browse) — the on-disk catalog is done; only the interactive REPL is missing.
 - **mount / map / unmap** — FUSE + block-device mechanisms are Linux-specific; the Windows equivalent
   (attach a restored image as a VHD, or a projected filesystem) is a separate design.
 - **advanced key mgmt** — `key change-passphrase`, master/RSA key escrow, `paperkey`.
