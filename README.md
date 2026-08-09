@@ -23,7 +23,8 @@ The sibling repo [`pbs-client`](https://github.com/ciroiriarte/pbs-client) cover
 
 | Capability | Status |
 |---|---|
-| File / directory backup (pxar-compatible) + restore | planned (M1) |
+| File / directory backup (pxar) + restore | **working (M1)** — verified against PBS 4.2.5 |
+| CLI (`backup` / `restore` / `snapshots`) | **working (M1)** |
 | VSS application-consistent snapshots | planned (M2) — **hard requirement** |
 | Client-side encryption (AES-256-GCM, `--keyfile`-compatible) | planned (M2) |
 | Incremental backups (known-chunk reuse) | planned (M2) |
@@ -31,7 +32,23 @@ The sibling repo [`pbs-client`](https://github.com/ciroiriarte/pbs-client) cover
 | Windows Service, scheduling, MSI packaging, code signing | planned (M4) |
 | MSSQL application-aware backup (VSS Writer → SQL VDI/SMO) | planned (M5) |
 
-See `../pbs-client-win` plan for the full roadmap and rationale.
+The M1 core is proven end to end: a directory is encoded to `pxar`, chunked, uploaded over the
+`proxmox-backup-protocol-v1` HTTP/2 session, and restored bit-for-bit — and the archives are valid
+enough that the **official `proxmox-backup-client` restores them** and the PBS server `verify`s them
+with zero errors.
+
+## Usage
+
+```sh
+# repository: [AUTHID@]HOST[:PORT]:DATASTORE
+export PBS_REPOSITORY='root@pam!token@pbs.example:store01'
+export PBS_PASSWORD='<token-secret>'
+export PBS_FINGERPRINT='aa:bb:...'      # for self-signed PBS certs
+
+pbs-client-win backup root.pxar:/path/to/dir --ns my-namespace --backup-id my-host
+pbs-client-win snapshots --ns my-namespace
+pbs-client-win restore host/my-host/1700000000 root.pxar /restore/target --ns my-namespace
+```
 
 ## Architecture (summary)
 
