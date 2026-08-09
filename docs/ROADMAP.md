@@ -28,6 +28,24 @@ real Proxmox Backup Server (PBS 4.2.5), and where noted, against the official `p
     the official client's `--keyfile`.
   - **Incremental backups** — known-chunk reuse from the previous snapshot.
 
+## CLI parity with proxmox-backup-client
+
+Done: `backup` (file/pxar, image/fidx, `--vss`, `--exclude`, incremental, encryption),
+`restore` (pxar extract, `--image`), `snapshot list/forget/notes/protected`,
+`prune`, `namespace create/list/delete`, `status`, `snapshot list --output-format json`,
+`key create` and encrypted backup with `--keyfile` (kdf none + scrypt) — all verified
+interoperable with the official client where applicable.
+
+Remaining vs the official client:
+- **catalog** (`.pcat1` upload + `catalog dump`/`shell`) — faster PBS-UI/CLI file browsing
+  (pxar is already browsable via its goodbye tables; the catalog is an optimization).
+- **selective restore** — restore a subset of paths from a pxar (we currently extract the whole archive).
+- **mount / map / unmap** — FUSE + block-device mechanisms are Linux-specific; the Windows equivalent
+  (attach a restored image as a VHD, or a projected filesystem) is a separate design.
+- **advanced key mgmt** — `key change-passphrase`, master/RSA key escrow, `paperkey`.
+- **login/logout** (ticket + 2FA), **task** list/log/stop, **benchmark**, **change-owner** — lower value;
+  API-token auth already covers the common case.
+
 ## Next
 
 - **M2 — VSS (hard requirement).** Application-consistent snapshots via the VSS requestor (COM).
