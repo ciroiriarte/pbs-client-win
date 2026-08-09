@@ -1,0 +1,16 @@
+<Project Sdk="WixToolset.Sdk/4.0.5">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <OutputName>pbs-client-win-installer</OutputName>
+    <!-- x64 product: components install to ProgramFiles64Folder, so the package must be 64-bit (ICE80). -->
+    <InstallerPlatform>x64</InstallerPlatform>
+    <PublishDir Condition="'$(PublishDir)' == ''">..\publish\</PublishDir>
+    <SourceDir Condition="'$(SourceDir)' == ''">..\</SourceDir>
+    <DefineConstants>PublishDir=$(PublishDir);SourceDir=$(SourceDir);$(DefineConstants)</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="4.0.5" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="4.0.5" />
+  </ItemGroup>
+</Project>

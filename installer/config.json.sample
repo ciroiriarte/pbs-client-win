@@ -1,0 +1,42 @@
+{
+  "// note": "pbs-client-win backup scheduler config. Secrets belong in 'env' (passed to the CLI as environment variables, never on the command line). Schedules use standard 5-field cron (min hour day-of-month month day-of-week), evaluated in UTC.",
+
+  "cliPath": "C:\\Program Files\\pbs-client-win\\pbs-client-win.exe",
+
+  "env": {
+    "PBS_PASSWORD": "s3cr3t-api-token-secret",
+    "PBS_FINGERPRINT": "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:00:11:22:33:44:55:66:77:88:99:00:11:22:33:44:55"
+  },
+
+  "jobs": [
+    {
+      "id": "hourly-data",
+      "repository": "backup-user@pbs!token123@pbs.example.com:backup-store",
+      "namespace": "win-servers",
+      "backupId": "app-server-01",
+      "sources": [ "data.pxar:C:\\Data" ],
+      "vss": true,
+      "incremental": true,
+      "keyfile": "C:\\ProgramData\\pbs-client-win\\encryption.key",
+      "schedule": "0 * * * *",
+      "retention": {
+        "keepLast": 24,
+        "keepDaily": 7,
+        "keepWeekly": 4
+      }
+    },
+    {
+      "id": "nightly-system-image",
+      "repository": "backup-user@pbs!token123@pbs.example.com:backup-store",
+      "namespace": "win-servers",
+      "backupId": "app-server-01",
+      "imageSource": "drive-c.img:C:",
+      "vss": true,
+      "schedule": "0 2 * * *",
+      "retention": {
+        "keepDaily": 7,
+        "keepMonthly": 6
+      }
+    }
+  ]
+}

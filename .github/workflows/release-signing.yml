@@ -1,0 +1,108 @@
+name: Release & Code Signing
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  build-and-sign:
+    name: Build, Sign & Package Release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK 8.0
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Extract Tag Version
+        id: get_version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
+            $version = "$version.0"
+          }
+          echo "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Publish Binaries
+        shell: pwsh
+        run: |
+          # Self-contained single-file so each exe bundles the .NET runtime: the MSI needs no .NET
+          # on the target (Server Core included) and packages just the two exes. Validated on
+          # Windows Server 2022 (msiexec /qn exit 0, service starts, clean uninstall).
+          $sf = '-p:PublishSingleFile=true','-p:IncludeNativeLibrariesForSelfExtract=true','-p:DebugType=none'
+          dotnet publish src/Pbs.Cli/Pbs.Cli.csproj -c Release -r win-x64 -f net8.0-windows --self-contained true $sf -o publish/
+          dotnet publish src/Pbs.Service/Pbs.Service.csproj -c Release -r win-x64 -f net8.0-windows --self-contained true $sf -o publish/
+
+      - name: Zip Executables for SignPath Signing
+        shell: pwsh
+        run: |
+          Compress-Archive -Path publish/pbs-client-win.exe, publish/Pbs.Service.exe -DestinationPath unsigned-binaries.zip
+
+      - name: Sign Executables via SignPath
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: 'pbs-client-win'
+          signing-policy-slug: 'release-signing'
+          artifact-path: 'unsigned-binaries.zip'
+          output-artifact-path: 'signed-binaries.zip'
+          wait-for-completion: true
+
+      - name: Unpack Signed Executables
+        shell: pwsh
+        run: |
+          Expand-Archive -Path signed-binaries.zip -DestinationPath publish/ -Force
+
+      - name: Build WiX MSI Installer
+        shell: pwsh
+        run: |
+          # The WiX SDK + UI/Util extensions are restored by `dotnet build` on the .wixproj
+          # (no separate `dotnet tool install wix` needed). Validated against WiX 4.0.5.
+          dotnet build installer/PbsClientWinInstaller.wixproj -c Release -p:BuildVersion=${{ env.VERSION }}
+          Copy-Item installer/bin/Release/pbs-client-win-installer.msi "pbs-client-win-${{ env.VERSION }}-x64.msi"
+
+      - name: Zip MSI for SignPath Signing
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "pbs-client-win-${{ env.VERSION }}-x64.msi" -DestinationPath unsigned-installer.zip
+
+      - name: Sign MSI via SignPath
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: 'pbs-client-win'
+          signing-policy-slug: 'release-signing'
+          artifact-path: 'unsigned-installer.zip'
+          output-artifact-path: 'signed-installer.zip'
+          wait-for-completion: true
+
+      - name: Unpack Signed MSI
+        shell: pwsh
+        run: |
+          Expand-Archive -Path signed-installer.zip -DestinationPath dist/ -Force
+
+      - name: Create GitHub Release and Attach Signed Installer
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/pbs-client-win-${{ env.VERSION }}-x64.msi
+          draft: false
+          prerelease: false
+          generate_release_notes: true
