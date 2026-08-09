@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Org.BouncyCastle.Crypto.Engines;
@@ -52,6 +53,68 @@ public static class KeyFile
 
         var key = GcmDecrypt(derived, iv, ciphertext, tag);
         return Exactly32(key, "decrypted keyfile key");
+    }
+
+    /// <summary>
+    /// Generate a new 32-byte encryption key and write a keyfile in the PBS format (loadable by the
+    /// official client). With a <paramref name="passphrase"/> the key is scrypt-protected; without,
+    /// it is written unprotected (<c>kdf: null</c>). Returns the key fingerprint.
+    /// </summary>
+    public static string Create(string path, string? passphrase)
+    {
+        var key = new byte[32];
+        RandomNumberGenerator.Fill(key);
+        var fingerprint = new CryptConfig(key).FingerprintHex();
+
+        object? kdf;
+        string dataB64;
+        if (string.IsNullOrEmpty(passphrase))
+        {
+            kdf = null;
+            dataB64 = Convert.ToBase64String(key);
+        }
+        else
+        {
+            const int n = 65536, r = 8, p = 1;
+            var salt = new byte[32];
+            RandomNumberGenerator.Fill(salt);
+            var derived = SCrypt.Generate(Encoding.UTF8.GetBytes(passphrase), salt, n, r, p, 32);
+            var iv = new byte[IvSize];
+            RandomNumberGenerator.Fill(iv);
+            var (ciphertext, tag) = GcmEncrypt(derived, iv, key);
+            var data = new byte[IvSize + TagSize + ciphertext.Length];
+            iv.CopyTo(data, 0);
+            tag.CopyTo(data, IvSize);
+            ciphertext.CopyTo(data, IvSize + TagSize);
+            dataB64 = Convert.ToBase64String(data);
+            kdf = new Dictionary<string, object>
+            {
+                ["Scrypt"] = new Dictionary<string, object> { ["n"] = n, ["r"] = r, ["p"] = p, ["salt"] = Convert.ToBase64String(salt) },
+            };
+        }
+
+        var now = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz");
+        var doc = new Dictionary<string, object?>
+        {
+            ["kdf"] = kdf,
+            ["created"] = now,
+            ["modified"] = now,
+            ["data"] = dataB64,
+            ["fingerprint"] = fingerprint,
+        };
+        File.WriteAllText(path, JsonSerializer.Serialize(doc));
+        return fingerprint;
+    }
+
+    private static (byte[] ciphertext, byte[] tag) GcmEncrypt(byte[] key, byte[] iv, byte[] plaintext)
+    {
+        var cipher = new GcmBlockCipher(new AesEngine());
+        cipher.Init(true, new AeadParameters(new KeyParameter(key), TagSize * 8, iv, Array.Empty<byte>()));
+        var output = new byte[cipher.GetOutputSize(plaintext.Length)];
+        int len = cipher.ProcessBytes(plaintext, 0, plaintext.Length, output, 0);
+        cipher.DoFinal(output, len);
+        int ctLen = output.Length - TagSize;
+        return (output[..ctLen], output[ctLen..]);
     }
 
     private static byte[] Exactly32(byte[] key, string what) =>

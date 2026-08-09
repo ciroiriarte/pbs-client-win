@@ -49,6 +49,11 @@ try
             return 1;
         case "status":
             return await StatusAsync(flags);
+        case "key" when positionals is ["create", var keyPath, ..]:
+            return KeyCreate(keyPath, flags);
+        case "key":
+            Console.Error.WriteLine("usage: pbs-client-win key create <path> [--kdf none|scrypt] [--key-password <pw>]");
+            return 1;
         default:
             Console.Error.WriteLine($"unknown command: {args[0]}");
             Console.Error.WriteLine("run 'pbs-client-win --help' for usage");
@@ -259,6 +264,21 @@ static async Task<int> ProtectedAsync(string snapshot, string value, Dictionary<
     return 0;
 }
 
+static int KeyCreate(string path, Dictionary<string, string> flags)
+{
+    var kdf = flags.GetValueOrDefault("kdf", "scrypt");
+    string? passphrase = null;
+    if (kdf == "scrypt")
+        passphrase = flags.GetValueOrDefault("key-password") ?? Environment.GetEnvironmentVariable("PBS_ENCRYPTION_PASSWORD")
+            ?? throw new ArgumentException("scrypt key requires --key-password or PBS_ENCRYPTION_PASSWORD (or use --kdf none)");
+    else if (kdf != "none")
+        throw new ArgumentException("--kdf must be 'none' or 'scrypt'");
+
+    var fingerprint = KeyFile.Create(path, passphrase);
+    Console.WriteLine($"created key {path} (kdf {kdf}, fingerprint {fingerprint})");
+    return 0;
+}
+
 static async Task<int> StatusAsync(Dictionary<string, string> flags)
 {
     using var client = PbsClient.Create(ResolveConnection(flags));
@@ -378,6 +398,7 @@ static void PrintUsage(string version)
     Console.WriteLine("  pbs-client-win snapshot protected <type/id/time> true|false --repository <repo> [--ns <ns>]");
     Console.WriteLine("  pbs-client-win namespace create|list|delete <namespace> [--delete-groups] --repository <repo>");
     Console.WriteLine("  pbs-client-win status --repository <repo>");
+    Console.WriteLine("  pbs-client-win key create <path> [--kdf none|scrypt] [--key-password <pw>]");
     Console.WriteLine();
     Console.WriteLine("backup file mode also accepts repeatable --exclude <glob> (e.g. --exclude *.tmp --exclude /logs/**).");
     Console.WriteLine("snapshot list accepts --output-format json.");
