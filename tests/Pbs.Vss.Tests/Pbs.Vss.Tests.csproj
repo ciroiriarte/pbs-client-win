@@ -13,10 +13,15 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Pbs.Vss\Pbs.Vss.csproj" />
+    <ProjectReference Include="..\..\src\Pbs.Protocol\Pbs.Protocol.csproj" />
+    <ProjectReference Include="..\..\src\Pbs.Chunker\Pbs.Chunker.csproj" />
+    <ProjectReference Include="..\..\src\Pbs.Pxar\Pbs.Pxar.csproj" />
+    <ProjectReference Include="..\..\src\Pbs.Cli\Pbs.Cli.csproj" />
   </ItemGroup>
 
 </Project>
