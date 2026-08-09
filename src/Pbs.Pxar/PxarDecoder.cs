@@ -7,7 +7,8 @@ namespace Pbs.Pxar;
 /// Decodes a pxar archive stream, extracting its files and directories under a target path.
 /// Reads the format sequentially: optional <c>FORMAT_VERSION</c>, then the root <c>ENTRY</c> and
 /// each directory body — <c>(FILENAME + child)*</c> terminated by a <c>GOODBYE</c> table. The
-/// entry <c>mode</c> distinguishes directory / file / symlink.
+/// entry <c>mode</c> distinguishes directory / file / symlink. With include patterns, only matching
+/// files are written; non-matching payloads are still consumed to keep the stream aligned.
 /// </summary>
 public sealed class PxarDecoder
 {
@@ -17,19 +18,30 @@ public sealed class PxarDecoder
 
     private readonly Stream _in;
     private readonly string _root; // canonical extraction root; nothing may be written outside it
+    private readonly PxarIncludes? _includes;
 
-    private PxarDecoder(Stream input, string root)
+    private PxarDecoder(Stream input, string root, PxarIncludes? includes)
     {
         _in = input;
         _root = root;
+        _includes = includes;
     }
 
     /// <summary>Extract the archive in <paramref name="input"/> into <paramref name="targetDir"/>.</summary>
-    public static async Task ExtractAsync(Stream input, string targetDir, CancellationToken ct = default)
+    public static Task ExtractAsync(Stream input, string targetDir, CancellationToken ct = default)
+        => ExtractAsync(input, targetDir, includePatterns: null, ct);
+
+    /// <summary>
+    /// Extract from <paramref name="input"/> into <paramref name="targetDir"/>. When
+    /// <paramref name="includePatterns"/> is non-empty, only entries whose relative path matches a
+    /// pattern are written; other files' payloads are skipped (the stream stays aligned).
+    /// </summary>
+    public static async Task ExtractAsync(Stream input, string targetDir, IReadOnlyList<string>? includePatterns, CancellationToken ct = default)
     {
         var root = Path.GetFullPath(targetDir);
         Directory.CreateDirectory(root);
-        var dec = new PxarDecoder(input, root);
+        var includes = includePatterns is { Count: > 0 } ? new PxarIncludes(includePatterns) : null;
+        var dec = new PxarDecoder(input, root, includes);
 
         var (htype, _) = await dec.ReadHeaderAsync(ct);
         if (htype == PxarFormat.FormatVersion)
@@ -41,10 +53,10 @@ public sealed class PxarDecoder
             throw new InvalidDataException($"pxar: expected root ENTRY, got htype {htype:x16}");
         await dec.ReadStatAsync(ct);                          // root stat (ignored)
 
-        await dec.ExtractDirBodyAsync(targetDir, ct);
+        await dec.ExtractDirBodyAsync(root, relativePrefix: "", ct);
     }
 
-    private async Task ExtractDirBodyAsync(string dir, CancellationToken ct)
+    private async Task ExtractDirBodyAsync(string dir, string relativePrefix, CancellationToken ct)
     {
         while (true)
         {
@@ -59,6 +71,7 @@ public sealed class PxarDecoder
 
             var name = await ReadNameAsync(size, ct);
             var path = Path.Combine(dir, name);
+            var relPath = relativePrefix.Length == 0 ? name : $"{relativePrefix}/{name}";
 
             var (eh, _) = await ReadHeaderAsync(ct);
             if (eh != PxarFormat.Entry)
@@ -67,8 +80,8 @@ public sealed class PxarDecoder
 
             if ((mode & ModeFmt) == ModeDir)
             {
-                Directory.CreateDirectory(path);
-                await ExtractDirBodyAsync(path, ct);
+                if (_includes is null) Directory.CreateDirectory(path); // else created lazily under matched files
+                await ExtractDirBodyAsync(path, relPath, ct);
             }
             else if ((mode & ModeFmt) == ModeLnk)
             {
@@ -76,16 +89,31 @@ public sealed class PxarDecoder
                 if (lh != PxarFormat.Symlink)
                     throw new InvalidDataException($"pxar: expected SYMLINK, got htype {lh:x16}");
                 var target = await ReadNameAsync(ls, ct);
-                if (!IsSafeSymlinkTarget(path, target))
-                    throw new InvalidDataException($"pxar: unsafe symlink target '{target}' -> escapes extraction root");
-                try { File.CreateSymbolicLink(path, target); } catch (IOException) { /* privilege/plat limits */ }
+
+                if (_includes is null || _includes.IsMatch(relPath, name))
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                    if (!IsSafeSymlinkTarget(path, target))
+                        throw new InvalidDataException($"pxar: unsafe symlink target '{target}' -> escapes extraction root");
+                    try { File.CreateSymbolicLink(path, target); } catch (IOException) { /* privilege/plat limits */ }
+                }
             }
             else // regular file
             {
                 var (ph, ps) = await ReadHeaderAsync(ct);
                 if (ph != PxarFormat.Payload)
                     throw new InvalidDataException($"pxar: expected PAYLOAD, got htype {ph:x16}");
-                await ExtractPayloadAsync(path, ps - PxarFormat.HeaderSize, ct);
+                long payloadSize = ps - PxarFormat.HeaderSize;
+
+                if (_includes is null || _includes.IsMatch(relPath, name))
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                    await ExtractPayloadAsync(path, payloadSize, ct);
+                }
+                else
+                {
+                    await SkipAsync(payloadSize, ct);
+                }
             }
         }
     }

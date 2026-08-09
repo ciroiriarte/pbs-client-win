@@ -23,7 +23,7 @@ try
         case "backup":
             return await BackupAsync(positionals, flags, multi);
         case "restore":
-            return await RestoreAsync(positionals, flags);
+            return await RestoreAsync(positionals, flags, multi);
         case "snapshot" when positionals is ["list", ..]:
         case "snapshots": // alias
             return await SnapshotsAsync(flags);
@@ -131,7 +131,7 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
     return 0;
 }
 
-static async Task<int> RestoreAsync(List<string> positionals, Dictionary<string, string> flags)
+static async Task<int> RestoreAsync(List<string> positionals, Dictionary<string, string> flags, ILookup<string, string> multi)
 {
     if (positionals.Count != 3) { Console.Error.WriteLine("restore: expected <snapshot> <archive.pxar> <target-dir>"); return 1; }
     var (snapshot, archive, target) = (positionals[0], positionals[1], positionals[2]);
@@ -151,11 +151,14 @@ static async Task<int> RestoreAsync(List<string> positionals, Dictionary<string,
         return 0;
     }
 
+    var patterns = multi["pattern"].ToList();
+    if (patterns.Count > 0) Console.WriteLine($"  patterns: {string.Join(", ", patterns)}");
+
     var stored = StoredArchiveName(archive);
     using var buffer = new MemoryStream();
     await reader.RestoreDynamicArchiveAsync(stored, buffer, crypt);
     buffer.Position = 0;
-    await PxarDecoder.ExtractAsync(buffer, target);
+    await PxarDecoder.ExtractAsync(buffer, target, patterns);
     Console.WriteLine($"restored {stored} -> {target} ({buffer.Length} bytes)");
     return 0;
 }
@@ -390,7 +393,7 @@ static void PrintUsage(string version)
     Console.WriteLine("Usage (verbs/flags mirror the upstream proxmox-backup-client where possible):");
     Console.WriteLine("  pbs-client-win backup <name.pxar>:<dir> [...] --repository <repo> [--ns <ns>] [--backup-id <id>] [--vss] [--no-incremental]");
     Console.WriteLine("  pbs-client-win backup <name.img>:<volume> --image --repository <repo> [--ns <ns>]   (Windows; whole-volume image via VSS)");
-    Console.WriteLine("  pbs-client-win restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  pbs-client-win restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>] [--pattern <glob>]");
     Console.WriteLine("  pbs-client-win snapshot list --repository <repo> [--ns <ns>]");
     Console.WriteLine("  pbs-client-win snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");
     Console.WriteLine("  pbs-client-win snapshot notes <type/id/time> [text] --repository <repo> [--ns <ns>]");
