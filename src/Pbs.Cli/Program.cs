@@ -49,6 +49,11 @@ try
             return 1;
         case "status":
             return await StatusAsync(flags);
+        case "catalog" when positionals is ["dump", var snap, ..]:
+            return await CatalogDumpAsync(snap, flags);
+        case "catalog":
+            Console.Error.WriteLine("usage: pbs-client-win catalog dump <type/id/time> --repository <repo> [--ns <ns>]");
+            return 1;
         case "key" when positionals is ["create", var keyPath, ..]:
             return KeyCreate(keyPath, flags);
         case "key":
@@ -101,6 +106,7 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
 
     await using var session = await BackupSession.OpenAsync(opts, backupType, backupId, backupTime);
     if (crypt is not null) { session.SetKeyFingerprint(crypt.FingerprintHex()); Console.WriteLine($"  encryption: on (key {crypt.FingerprintHex()[..17]}…)"); }
+    var catalogRoots = new List<(string Stored, PxarDirNode Tree)>(); // for the .pcat1 catalog (file mode)
     foreach (var (name, target) in items)
     {
         DynamicArchive.UploadStats stats;
@@ -118,13 +124,31 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
             if (!Directory.Exists(path)) throw new ArgumentException($"'{path}' is not a directory (use --image to back up a volume)");
             stored = StoredArchiveName(name);
             var readPath = snapshot.Map(path); // live path, or its shadow-copy path under VSS
+            var tree = PxarTree.FromDirectory(readPath, excludes);
+            catalogRoots.Add((stored, tree));
             using var pxar = new MemoryStream();
-            await PxarEncoder.EncodeAsync(PxarTree.FromDirectory(readPath, excludes), pxar);
+            await PxarEncoder.EncodeAsync(tree, pxar);
             Console.WriteLine($"  {name}: {path} -> {stored} ({pxar.Length} bytes)");
             stats = await DynamicArchive.UploadAsync(session, stored, pxar.ToArray(), crypt: crypt, incremental: incremental);
         }
         Console.WriteLine($"    chunks: {stats.TotalChunks} total, {stats.UploadedChunks} uploaded, {stats.ReusedChunks} reused");
     }
+    // Upload the catalog (.pcat1) for fast file browsing — each archive wrapped under its stored
+    // name (e.g. root.pxar.didx), matching the official client.
+    if (!imageMode && catalogRoots.Count > 0)
+    {
+        var forest = new PxarDirNode { Name = string.Empty };
+        foreach (var (stored, tree) in catalogRoots)
+        {
+            var archiveDir = new PxarDirNode { Name = stored, MtimeSecs = tree.MtimeSecs, MtimeNanos = tree.MtimeNanos };
+            archiveDir.Children.AddRange(tree.Children);
+            forest.Children.Add(archiveDir);
+        }
+        var catalogBytes = PxarCatalog.Build(forest);
+        var catStats = await DynamicArchive.UploadAsync(session, "catalog.pcat1.didx", catalogBytes, crypt: crypt, incremental: incremental);
+        Console.WriteLine($"  catalog.pcat1.didx: {catalogBytes.Length} bytes ({catStats.UploadedChunks} uploaded)");
+    }
+
     snapshot.Complete();
     await session.FinishAsync();
     Console.WriteLine($"backup complete: {backupType}/{backupId}/{backupTime}");
@@ -267,6 +291,22 @@ static async Task<int> ProtectedAsync(string snapshot, string value, Dictionary<
     return 0;
 }
 
+static async Task<int> CatalogDumpAsync(string snapshot, Dictionary<string, string> flags)
+{
+    var opts = ResolveConnection(flags);
+    var (type, id, time) = ParseSnapshot(snapshot);
+    var crypt = LoadCrypt(flags);
+
+    await using var reader = await ReaderSession.OpenAsync(opts, type, id, time);
+    using var buffer = new MemoryStream();
+    await reader.RestoreDynamicArchiveAsync("catalog.pcat1.didx", buffer, crypt);
+
+    var root = PxarCatalog.Parse(buffer.ToArray());
+    foreach (var item in PxarCatalog.Enumerate(root))
+        Console.WriteLine($"{item.Path}\t{(item.Size?.ToString() ?? "-")}");
+    return 0;
+}
+
 static int KeyCreate(string path, Dictionary<string, string> flags)
 {
     var kdf = flags.GetValueOrDefault("kdf", "scrypt");
@@ -401,6 +441,7 @@ static void PrintUsage(string version)
     Console.WriteLine("  pbs-client-win snapshot protected <type/id/time> true|false --repository <repo> [--ns <ns>]");
     Console.WriteLine("  pbs-client-win namespace create|list|delete <namespace> [--delete-groups] --repository <repo>");
     Console.WriteLine("  pbs-client-win status --repository <repo>");
+    Console.WriteLine("  pbs-client-win catalog dump <type/id/time> --repository <repo> [--ns <ns>]");
     Console.WriteLine("  pbs-client-win key create <path> [--kdf none|scrypt] [--key-password <pw>]");
     Console.WriteLine();
     Console.WriteLine("backup file mode also accepts repeatable --exclude <glob> (e.g. --exclude *.tmp --exclude /logs/**).");
