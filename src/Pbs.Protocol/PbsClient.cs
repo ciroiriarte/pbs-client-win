@@ -105,6 +105,38 @@ public sealed class PbsClient : IDisposable
         await EnsureOkAsync(resp, "namespace create", ct);
     }
 
+    /// <summary>Datastore status (total/used/available bytes, etc.) as the raw JSON object.</summary>
+    public async Task<JsonElement> GetStatusAsync(CancellationToken ct = default)
+    {
+        var env = await _http.GetFromJsonAsync<ApiEnvelope<JsonElement>>($"api2/json/admin/datastore/{Store()}/status", ct);
+        return env?.Data ?? default;
+    }
+
+    /// <summary>List namespaces in the datastore.</summary>
+    public async Task<IReadOnlyList<string>> ListNamespacesAsync(CancellationToken ct = default)
+    {
+        var env = await _http.GetFromJsonAsync<ApiEnvelope<JsonElement>>($"api2/json/admin/datastore/{Store()}/namespace", ct);
+        if (env?.Data is not { ValueKind: JsonValueKind.Array } arr) return Array.Empty<string>();
+        return arr.EnumerateArray().Select(e => e.GetProperty("ns").GetString() ?? string.Empty).ToList();
+    }
+
+    /// <summary>Delete a namespace (optionally including all its backup groups).</summary>
+    public async Task DeleteNamespaceAsync(string ns, bool deleteGroups, CancellationToken ct = default)
+    {
+        var q = $"ns={Uri.EscapeDataString(ns)}&delete-groups={(deleteGroups ? "true" : "false")}";
+        using var resp = await _http.DeleteAsync($"api2/json/admin/datastore/{Store()}/namespace?{q}", ct);
+        await EnsureOkAsync(resp, "namespace delete", ct);
+    }
+
+    /// <summary>Mark a snapshot protected (or not) — protected snapshots are skipped by prune/GC.</summary>
+    public async Task SetProtectedAsync(string backupType, string backupId, long backupTime, bool isProtected, CancellationToken ct = default)
+    {
+        var body = SnapshotBody(backupType, backupId, backupTime);
+        body["protected"] = isProtected;
+        using var resp = await _http.PutAsJsonAsync($"api2/json/admin/datastore/{Store()}/protected", body, ct);
+        await EnsureOkAsync(resp, "set protected", ct);
+    }
+
     /// <summary>Delete (forget) a single snapshot.</summary>
     public async Task ForgetSnapshotAsync(string backupType, string backupId, long backupTime, CancellationToken ct = default)
     {

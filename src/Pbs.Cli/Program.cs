@@ -31,6 +31,8 @@ try
             return await ForgetAsync(snap, flags);
         case "snapshot" when positionals is ["notes", var snap, ..]:
             return await NotesAsync(snap, positionals.Skip(2).ToList(), flags);
+        case "snapshot" when positionals is ["protected", var snap, var val, ..]:
+            return await ProtectedAsync(snap, val, flags);
         case "snapshot":
             Console.Error.WriteLine("usage: pbs-client-win snapshot list|forget <type/id/time>|notes <type/id/time> [text]");
             return 1;
@@ -38,9 +40,15 @@ try
             return await PruneAsync(positionals, flags);
         case "namespace" when positionals is ["create", var ns, ..]:
             return await NamespaceCreateAsync(ns, flags);
+        case "namespace" when positionals is ["list", ..]:
+            return await NamespaceListAsync(flags);
+        case "namespace" when positionals is ["delete", var ns, ..]:
+            return await NamespaceDeleteAsync(ns, flags);
         case "namespace":
-            Console.Error.WriteLine("usage: pbs-client-win namespace create <namespace> --repository <repo>");
+            Console.Error.WriteLine("usage: pbs-client-win namespace create|list|delete <namespace> --repository <repo>");
             return 1;
+        case "status":
+            return await StatusAsync(flags);
         default:
             Console.Error.WriteLine($"unknown command: {args[0]}");
             Console.Error.WriteLine("run 'pbs-client-win --help' for usage");
@@ -225,6 +233,47 @@ static async Task<int> NamespaceCreateAsync(string ns, Dictionary<string, string
     return 0;
 }
 
+static async Task<int> NamespaceListAsync(Dictionary<string, string> flags)
+{
+    using var client = PbsClient.Create(ResolveConnection(flags));
+    foreach (var ns in await client.ListNamespacesAsync())
+        Console.WriteLine(ns.Length == 0 ? "(root)" : ns);
+    return 0;
+}
+
+static async Task<int> NamespaceDeleteAsync(string ns, Dictionary<string, string> flags)
+{
+    using var client = PbsClient.Create(ResolveConnection(flags));
+    await client.DeleteNamespaceAsync(ns, flags.ContainsKey("delete-groups"));
+    Console.WriteLine($"deleted namespace {ns}");
+    return 0;
+}
+
+static async Task<int> ProtectedAsync(string snapshot, string value, Dictionary<string, string> flags)
+{
+    var (type, id, time) = ParseSnapshot(snapshot);
+    using var client = PbsClient.Create(ResolveConnection(flags));
+    var on = value is "true" or "1" or "on";
+    await client.SetProtectedAsync(type, id, time, on);
+    Console.WriteLine($"{type}/{id}/{time} protected={on}");
+    return 0;
+}
+
+static async Task<int> StatusAsync(Dictionary<string, string> flags)
+{
+    using var client = PbsClient.Create(ResolveConnection(flags));
+    var s = client.Options.Datastore;
+    var status = await client.GetStatusAsync();
+    long total = status.TryGetProperty("total", out var t) ? t.GetInt64() : 0;
+    long used = status.TryGetProperty("used", out var u) ? u.GetInt64() : 0;
+    long avail = status.TryGetProperty("avail", out var a) ? a.GetInt64() : 0;
+    double pct = total > 0 ? 100.0 * used / total : 0;
+    Console.WriteLine($"datastore {s}: {Gib(used)} used / {Gib(total)} ({pct:0.0}%), {Gib(avail)} available");
+    return 0;
+
+    static string Gib(long b) => $"{b / 1024.0 / 1024 / 1024:0.00} GiB";
+}
+
 // ---- helpers ----
 
 static PbsConnectionOptions ResolveConnection(Dictionary<string, string> flags)
@@ -325,7 +374,9 @@ static void PrintUsage(string version)
     Console.WriteLine("  pbs-client-win snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");
     Console.WriteLine("  pbs-client-win snapshot notes <type/id/time> [text] --repository <repo> [--ns <ns>]");
     Console.WriteLine("  pbs-client-win prune <type/id> --keep-last N [--keep-daily N ...] [--dry-run] --repository <repo> [--ns <ns>]");
-    Console.WriteLine("  pbs-client-win namespace create <namespace> --repository <repo>");
+    Console.WriteLine("  pbs-client-win snapshot protected <type/id/time> true|false --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  pbs-client-win namespace create|list|delete <namespace> [--delete-groups] --repository <repo>");
+    Console.WriteLine("  pbs-client-win status --repository <repo>");
     Console.WriteLine();
     Console.WriteLine("backup file mode also accepts repeatable --exclude <glob> (e.g. --exclude *.tmp --exclude /logs/**).");
     Console.WriteLine("snapshot list accepts --output-format json.");
