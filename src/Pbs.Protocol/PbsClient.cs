@@ -137,6 +137,22 @@ public sealed class PbsClient : IDisposable
         await EnsureOkAsync(resp, "set protected", ct);
     }
 
+    /// <summary>Change the owner of a backup group.</summary>
+    public async Task ChangeOwnerAsync(string backupType, string backupId, string newOwner, CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object?>
+        {
+            ["backup-type"] = backupType,
+            ["backup-id"] = backupId,
+            ["new-owner"] = newOwner,
+        };
+        if (!string.IsNullOrEmpty(Options.Namespace)) body["ns"] = Options.Namespace;
+
+        // PBS exposes change-owner as POST with backup-type/backup-id (not a single backup-group).
+        using var resp = await _http.PostAsJsonAsync($"api2/json/admin/datastore/{Store()}/change-owner", body, ct);
+        await EnsureOkAsync(resp, "change owner", ct);
+    }
+
     /// <summary>Delete (forget) a single snapshot.</summary>
     public async Task ForgetSnapshotAsync(string backupType, string backupId, long backupTime, CancellationToken ct = default)
     {
@@ -192,6 +208,37 @@ public sealed class PbsClient : IDisposable
                 result.Add(new PruneEntry(e.GetProperty("backup-time").GetInt64(),
                     e.TryGetProperty("keep", out var keep) && keep.GetBoolean()));
         return result;
+    }
+
+    /// <summary>List tasks for a PBS node. Returns raw JSON array elements from <c>/nodes/{node}/tasks</c>.</summary>
+    public async Task<IReadOnlyList<JsonElement>> ListTasksAsync(string node, bool running, int limit, CancellationToken ct = default)
+    {
+        var path = $"api2/json/nodes/{Uri.EscapeDataString(node)}/tasks?limit={limit}&start=0";
+        if (running) path += "&running=true&errors=false";
+
+        var envelope = await _http.GetFromJsonAsync<ApiEnvelope<JsonElement>>(path, ct);
+        if (envelope?.Data is not { ValueKind: JsonValueKind.Array } arr) return Array.Empty<JsonElement>();
+        return arr.EnumerateArray().Select(e => e.Clone()).ToList();
+    }
+
+    /// <summary>Get a PBS task log as newline-joined text.</summary>
+    public async Task<string> GetTaskLogAsync(string node, string upid, CancellationToken ct = default)
+    {
+        var path = $"api2/json/nodes/{Uri.EscapeDataString(node)}/tasks/{Uri.EscapeDataString(upid)}/log?start=0&limit=1000000&test-status=false";
+        var envelope = await _http.GetFromJsonAsync<ApiEnvelope<JsonElement>>(path, ct);
+        if (envelope?.Data is not { ValueKind: JsonValueKind.Array } arr) return string.Empty;
+
+        return string.Join('\n', arr.EnumerateArray()
+            .Where(e => e.TryGetProperty("t", out var text) && text.ValueKind == JsonValueKind.String)
+            .Select(e => e.GetProperty("t").GetString()));
+    }
+
+    /// <summary>Stop a PBS task.</summary>
+    public async Task StopTaskAsync(string node, string upid, CancellationToken ct = default)
+    {
+        using var resp = await _http.DeleteAsync(
+            $"api2/json/nodes/{Uri.EscapeDataString(node)}/tasks/{Uri.EscapeDataString(upid)}", ct);
+        await EnsureOkAsync(resp, "stop task", ct);
     }
 
     private string Store() => Uri.EscapeDataString(Options.Datastore ?? throw new InvalidOperationException("datastore required"));

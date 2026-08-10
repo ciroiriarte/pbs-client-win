@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using Pbs.Abstractions;
 using Pbs.Cli;
 using Pbs.Protocol;
@@ -38,8 +39,19 @@ try
         case "snapshot":
             Console.Error.WriteLine("usage: proxmox-backup-client snapshot list|forget <type/id/time>|notes <type/id/time> [text]");
             return 1;
+        case "change-owner":
+            return await ChangeOwnerAsync(positionals, flags);
         case "prune":
             return await PruneAsync(positionals, flags);
+        case "task" when positionals is ["list", ..]:
+            return await TaskListAsync(flags);
+        case "task" when positionals is ["log", var upid, ..]:
+            return await TaskLogAsync(upid, flags);
+        case "task" when positionals is ["stop", var upid, ..]:
+            return await TaskStopAsync(upid, flags);
+        case "task":
+            Console.Error.WriteLine("usage: proxmox-backup-client task list|log <upid>|stop <upid> --repository <repo> [--node <node>]");
+            return 1;
         case "namespace" when positionals is ["create", var ns, ..]:
             return await NamespaceCreateAsync(ns, flags);
         case "namespace" when positionals is ["list", ..]:
@@ -258,6 +270,61 @@ static async Task<int> PruneAsync(List<string> positionals, Dictionary<string, s
     return 0;
 }
 
+static async Task<int> ChangeOwnerAsync(List<string> positionals, Dictionary<string, string> flags)
+{
+    if (positionals.Count != 2) { Console.Error.WriteLine("change-owner: expected <type/id> <new-owner>"); return 1; }
+
+    var group = positionals[0].Split('/', 2);
+    if (group.Length != 2) { Console.Error.WriteLine("change-owner: group must be <type/id>, e.g. host/my-host"); return 1; }
+
+    var opts = ResolveConnection(flags);
+    using var client = PbsClient.Create(opts);
+    await client.ChangeOwnerAsync(group[0], group[1], positionals[1]);
+    Console.WriteLine($"changed owner of {positionals[0]} to {positionals[1]}");
+    return 0;
+}
+
+static async Task<int> TaskListAsync(Dictionary<string, string> flags)
+{
+    var node = flags.GetValueOrDefault("node", "localhost");
+    var running = flags.ContainsKey("running");
+    var limit = int.TryParse(flags.GetValueOrDefault("limit"), out var parsedLimit) ? parsedLimit : 50;
+
+    using var client = PbsClient.Create(ResolveConnection(flags));
+    var tasks = await client.ListTasksAsync(node, running, limit);
+    if (flags.GetValueOrDefault("output-format") == "json")
+    {
+        Console.WriteLine("[" + string.Join(",", tasks.Select(t => t.GetRawText())) + "]");
+        return 0;
+    }
+
+    foreach (var task in tasks)
+    {
+        var upid = GetString(task, "upid") ?? GetString(task, "UPID") ?? "-";
+        var status = GetString(task, "status") ?? (task.TryGetProperty("endtime", out _) ? "-" : "running");
+        var starttime = GetInt64(task, "starttime")?.ToString() ?? "-";
+        Console.WriteLine($"{upid}  {status}  {starttime}");
+    }
+    return 0;
+}
+
+static async Task<int> TaskLogAsync(string upid, Dictionary<string, string> flags)
+{
+    var node = flags.GetValueOrDefault("node", "localhost");
+    using var client = PbsClient.Create(ResolveConnection(flags));
+    Console.WriteLine(await client.GetTaskLogAsync(node, upid));
+    return 0;
+}
+
+static async Task<int> TaskStopAsync(string upid, Dictionary<string, string> flags)
+{
+    var node = flags.GetValueOrDefault("node", "localhost");
+    using var client = PbsClient.Create(ResolveConnection(flags));
+    await client.StopTaskAsync(node, upid);
+    Console.WriteLine($"stopped task {upid}");
+    return 0;
+}
+
 static async Task<int> NamespaceCreateAsync(string ns, Dictionary<string, string> flags)
 {
     var opts = ResolveConnection(flags);
@@ -402,6 +469,12 @@ static (string type, string id, long time) ParseSnapshot(string snapshot)
     return (parts[0], parts[1], time);
 }
 
+static string? GetString(JsonElement obj, string name) =>
+    obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+static long? GetInt64(JsonElement obj, string name) =>
+    obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var n) ? n : null;
+
 static (List<string> positionals, Dictionary<string, string> flags, ILookup<string, string> multi) ParseArgs(string[] args)
 {
     var positionals = new List<string>();
@@ -442,6 +515,10 @@ static void PrintUsage(string version)
     Console.WriteLine("  proxmox-backup-client snapshot notes <type/id/time> [text] --repository <repo> [--ns <ns>]");
     Console.WriteLine("  proxmox-backup-client prune <type/id> --keep-last N [--keep-daily N ...] [--dry-run] --repository <repo> [--ns <ns>]");
     Console.WriteLine("  proxmox-backup-client snapshot protected <type/id/time> true|false --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  proxmox-backup-client change-owner <type/id> <new-owner> --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  proxmox-backup-client task list --repository <repo> [--node <node>] [--running] [--limit N] [--output-format json]");
+    Console.WriteLine("  proxmox-backup-client task log <upid> --repository <repo> [--node <node>]");
+    Console.WriteLine("  proxmox-backup-client task stop <upid> --repository <repo> [--node <node>]");
     Console.WriteLine("  proxmox-backup-client namespace create|list|delete <namespace> [--delete-groups] --repository <repo>");
     Console.WriteLine("  proxmox-backup-client status --repository <repo>");
     Console.WriteLine("  proxmox-backup-client catalog dump <type/id/time> --repository <repo> [--ns <ns>]");

@@ -51,8 +51,10 @@ Remaining vs the official client:
 - **mount / map / unmap** — FUSE + block-device mechanisms are Linux-specific; the Windows equivalent
   (attach a restored image as a VHD, or a projected filesystem) is a separate design.
 - **advanced key mgmt** — `key change-passphrase`, master/RSA key escrow, `paperkey`.
-- **login/logout** (ticket + 2FA), **task** list/log/stop, **change-owner** — lower value;
-  API-token auth already covers the common case.
+- **login/logout** (ticket + 2FA) — lower value; API-token auth already covers the common case.
+
+Also done: **change-owner** (POST `change-owner` with backup-type/backup-id/new-owner) and **task**
+`list`/`log`/`stop` (`/nodes/{node}/tasks`, node defaults to `localhost`) — verified against a live PBS.
 
 ## Next
 
