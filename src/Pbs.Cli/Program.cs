@@ -34,7 +34,7 @@ try
         case "snapshot" when positionals is ["protected", var snap, var val, ..]:
             return await ProtectedAsync(snap, val, flags);
         case "snapshot":
-            Console.Error.WriteLine("usage: pbs-client-win snapshot list|forget <type/id/time>|notes <type/id/time> [text]");
+            Console.Error.WriteLine("usage: proxmox-backup-client snapshot list|forget <type/id/time>|notes <type/id/time> [text]");
             return 1;
         case "prune":
             return await PruneAsync(positionals, flags);
@@ -45,23 +45,23 @@ try
         case "namespace" when positionals is ["delete", var ns, ..]:
             return await NamespaceDeleteAsync(ns, flags);
         case "namespace":
-            Console.Error.WriteLine("usage: pbs-client-win namespace create|list|delete <namespace> --repository <repo>");
+            Console.Error.WriteLine("usage: proxmox-backup-client namespace create|list|delete <namespace> --repository <repo>");
             return 1;
         case "status":
             return await StatusAsync(flags);
         case "catalog" when positionals is ["dump", var snap, ..]:
             return await CatalogDumpAsync(snap, flags);
         case "catalog":
-            Console.Error.WriteLine("usage: pbs-client-win catalog dump <type/id/time> --repository <repo> [--ns <ns>]");
+            Console.Error.WriteLine("usage: proxmox-backup-client catalog dump <type/id/time> --repository <repo> [--ns <ns>]");
             return 1;
         case "key" when positionals is ["create", var keyPath, ..]:
             return KeyCreate(keyPath, flags);
         case "key":
-            Console.Error.WriteLine("usage: pbs-client-win key create <path> [--kdf none|scrypt] [--key-password <pw>]");
+            Console.Error.WriteLine("usage: proxmox-backup-client key create <path> [--kdf none|scrypt] [--key-password <pw>]");
             return 1;
         default:
             Console.Error.WriteLine($"unknown command: {args[0]}");
-            Console.Error.WriteLine("run 'pbs-client-win --help' for usage");
+            Console.Error.WriteLine("run 'proxmox-backup-client --help' for usage");
             return 1;
     }
 }
@@ -368,7 +368,7 @@ static ISnapshotSource CreateSnapshotSource(bool useVss, IReadOnlyCollection<str
 #if WINDOWS
     return new Pbs.Vss.VssSnapshotSource(volumes);
 #else
-    throw new PlatformNotSupportedException("--vss requires the Windows build of pbs-client-win");
+    throw new PlatformNotSupportedException("--vss requires the Windows build of proxmox-backup-client");
 #endif
 }
 
@@ -427,22 +427,22 @@ static (List<string> positionals, Dictionary<string, string> flags, ILookup<stri
 
 static void PrintUsage(string version)
 {
-    Console.WriteLine("pbs-client-win — Proxmox Backup client for Windows");
+    Console.WriteLine("proxmox-backup-client — Proxmox Backup client for Windows");
     Console.WriteLine($"version {version}");
     Console.WriteLine();
     Console.WriteLine("Usage (verbs/flags mirror the upstream proxmox-backup-client where possible):");
-    Console.WriteLine("  pbs-client-win backup <name.pxar>:<dir> [...] --repository <repo> [--ns <ns>] [--backup-id <id>] [--vss] [--no-incremental]");
-    Console.WriteLine("  pbs-client-win backup <name.img>:<volume> --image --repository <repo> [--ns <ns>]   (Windows; whole-volume image via VSS)");
-    Console.WriteLine("  pbs-client-win restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>] [--pattern <glob>]");
-    Console.WriteLine("  pbs-client-win snapshot list --repository <repo> [--ns <ns>]");
-    Console.WriteLine("  pbs-client-win snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");
-    Console.WriteLine("  pbs-client-win snapshot notes <type/id/time> [text] --repository <repo> [--ns <ns>]");
-    Console.WriteLine("  pbs-client-win prune <type/id> --keep-last N [--keep-daily N ...] [--dry-run] --repository <repo> [--ns <ns>]");
-    Console.WriteLine("  pbs-client-win snapshot protected <type/id/time> true|false --repository <repo> [--ns <ns>]");
-    Console.WriteLine("  pbs-client-win namespace create|list|delete <namespace> [--delete-groups] --repository <repo>");
-    Console.WriteLine("  pbs-client-win status --repository <repo>");
-    Console.WriteLine("  pbs-client-win catalog dump <type/id/time> --repository <repo> [--ns <ns>]");
-    Console.WriteLine("  pbs-client-win key create <path> [--kdf none|scrypt] [--key-password <pw>]");
+    Console.WriteLine("  proxmox-backup-client backup <name.pxar>:<dir> [...] --repository <repo> [--ns <ns>] [--backup-id <id>] [--vss] [--no-incremental]");
+    Console.WriteLine("  proxmox-backup-client backup <name.img>:<volume> --image --repository <repo> [--ns <ns>]   (Windows; whole-volume image via VSS)");
+    Console.WriteLine("  proxmox-backup-client restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>] [--pattern <glob>]");
+    Console.WriteLine("  proxmox-backup-client snapshot list --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  proxmox-backup-client snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  proxmox-backup-client snapshot notes <type/id/time> [text] --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  proxmox-backup-client prune <type/id> --keep-last N [--keep-daily N ...] [--dry-run] --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  proxmox-backup-client snapshot protected <type/id/time> true|false --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  proxmox-backup-client namespace create|list|delete <namespace> [--delete-groups] --repository <repo>");
+    Console.WriteLine("  proxmox-backup-client status --repository <repo>");
+    Console.WriteLine("  proxmox-backup-client catalog dump <type/id/time> --repository <repo> [--ns <ns>]");
+    Console.WriteLine("  proxmox-backup-client key create <path> [--kdf none|scrypt] [--key-password <pw>]");
     Console.WriteLine();
     Console.WriteLine("backup file mode also accepts repeatable --exclude <glob> (e.g. --exclude *.tmp --exclude /logs/**).");
     Console.WriteLine("snapshot list accepts --output-format json.");

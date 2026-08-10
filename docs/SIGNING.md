@@ -7,7 +7,7 @@ This document outlines the standard operating procedure for Authenticode code si
 ## 1. Overview & Objectives
 
 Code signing for `pbs-client-win` serves three key functions:
-1. **Identity & Authenticity**: Proves that the binaries (`pbs-client-win.exe`, `Pbs.Service.exe`) and the installer (`.msi`) originated from this open-source project and have not been modified or tampered with.
+1. **Identity & Authenticity**: Proves that the binaries (`proxmox-backup-client.exe`, `Pbs.Service.exe`) and the installer (`.msi`) originated from this open-source project and have not been modified or tampered with.
 2. **Windows SmartScreen Trust**: Prevents untrusted executable warnings ("Windows protected your PC") on end-user systems.
 3. **Security Posture**: Establishes trusted process identity for enterprise antivirus and EDR solutions.
 
@@ -58,7 +58,7 @@ To maintain chain-of-trust integrity, signing MUST follow a strict two-stage seq
 
 ```mermaid
 graph TD
-    A[Build .NET 8 Release Binaries] --> B[Zip pbs-client-win.exe & Pbs.Service.exe]
+    A[Build .NET 8 Release Binaries] --> B[Zip proxmox-backup-client.exe & Pbs.Service.exe]
     B --> C[SignPath API: Sign Inner Executables]
     C --> D[Unpack Signed Executables to publish/]
     D --> E[WiX v4 Packaging: Build .msi Installer]
@@ -69,12 +69,12 @@ graph TD
 ```
 
 ### Artifact List
-1. `pbs-client-win.exe` (CLI executable)
+1. `proxmox-backup-client.exe` (CLI executable)
 2. `Pbs.Service.exe` (Windows Service supervisor executable)
 3. `pbs-client-win-<version>-x64.msi` (WiX v4 Windows Installer package)
 
 > [!IMPORTANT]
-> **Order Matters**: Inner executables (`pbs-client-win.exe` and `Pbs.Service.exe`) MUST be signed **BEFORE** packaging into the MSI. If unsigned executables are bundled inside a signed MSI, real-time protection engines like Microsoft Defender or CrowdStrike will flag the extracted child processes when the service launches them.
+> **Order Matters**: Inner executables (`proxmox-backup-client.exe` and `Pbs.Service.exe`) MUST be signed **BEFORE** packaging into the MSI. If unsigned executables are bundled inside a signed MSI, real-time protection engines like Microsoft Defender or CrowdStrike will flag the extracted child processes when the service launches them.
 
 ---
 
@@ -94,7 +94,7 @@ graph TD
 If an AV vendor incorrectly flags signed binaries, follow these procedures to submit a false-positive review request:
 
 ### Required Submission Details
-- **SHA256 Hash**: Of `pbs-client-win.exe`, `Pbs.Service.exe`, and `.msi`.
+- **SHA256 Hash**: Of `proxmox-backup-client.exe`, `Pbs.Service.exe`, and `.msi`.
 - **Authenticode Signature Details**: Issuer (`SignPath Foundation`), Serial Number, and Timestamp.
 - **Source Link**: `https://github.com/<owner>/pbs-client-win`
 - **Build Provenance**: Link to the GitHub Actions run log.
@@ -108,7 +108,7 @@ If an AV vendor incorrectly flags signed binaries, follow these procedures to su
 
 2. **CrowdStrike Falcon**:
    - Portal: Support Portal / Falcon Console -> Detection Hash Exclusions -> Request Global False Positive Review.
-   - Note: Provide process hash and path `C:\Program Files\pbs-client-win\pbs-client-win.exe`.
+   - Note: Provide process hash and path `C:\Program Files\pbs-client-win\proxmox-backup-client.exe`.
 
 3. **SentinelOne**:
    - Portal: SentinelOne Management Console -> Incidents -> Exclusions -> Report False Positive.
@@ -117,7 +117,7 @@ If an AV vendor incorrectly flags signed binaries, follow these procedures to su
    - Portal: [https://support.sophos.com/support/s/filesubmission](https://support.sophos.com/support/s/filesubmission)
 
 5. **ESET Endpoint Security**:
-   - Email: `samples@eset.com` with subject `False Positive: pbs-client-win.exe`.
+   - Email: `samples@eset.com` with subject `False Positive: proxmox-backup-client.exe`.
 
 ---
 
@@ -175,7 +175,7 @@ jobs:
       - name: Zip Executables for SignPath Signing
         shell: pwsh
         run: |
-          Compress-Archive -Path publish/pbs-client-win.exe, publish/Pbs.Service.exe -DestinationPath unsigned-binaries.zip
+          Compress-Archive -Path publish/proxmox-backup-client.exe, publish/Pbs.Service.exe -DestinationPath unsigned-binaries.zip
 
       - name: Sign Executables via SignPath
         uses: signpath/github-action-submit-signing-request@v1

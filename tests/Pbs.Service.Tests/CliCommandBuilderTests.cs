@@ -29,9 +29,9 @@ public sealed class CliCommandBuilderTests
             Schedule = "0 2 * * *"
         };
 
-        var command = CliCommandBuilder.BuildBackup("pbs-client-win.exe", config, job);
+        var command = CliCommandBuilder.BuildBackup("proxmox-backup-client.exe", config, job);
 
-        Assert.Equal("pbs-client-win.exe", command.FileName);
+        Assert.Equal("proxmox-backup-client.exe", command.FileName);
         Assert.Equal(
             [
                 "backup",

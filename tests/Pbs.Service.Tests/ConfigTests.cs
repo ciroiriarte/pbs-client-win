@@ -10,7 +10,7 @@ public sealed class ConfigTests
     {
         const string json = """
         {
-          "cliPath": "C:\\Program Files\\pbs-client-win\\pbs-client-win.exe",
+          "cliPath": "C:\\Program Files\\pbs-client-win\\proxmox-backup-client.exe",
           "env": {
             "PBS_PASSWORD": "secret",
             "PBS_FINGERPRINT": "fingerprint"

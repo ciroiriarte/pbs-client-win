@@ -54,21 +54,21 @@ export PBS_REPOSITORY='root@pam!token@pbs.example:store01'
 export PBS_PASSWORD='<token-secret>'
 export PBS_FINGERPRINT='aa:bb:...'      # for self-signed PBS certs
 
-pbs-client-win backup root.pxar:/path/to/dir --ns my-namespace --backup-id my-host
-pbs-client-win snapshot list --ns my-namespace
-pbs-client-win restore host/my-host/1700000000 root.pxar /restore/target --ns my-namespace
+proxmox-backup-client backup root.pxar:/path/to/dir --ns my-namespace --backup-id my-host
+proxmox-backup-client snapshot list --ns my-namespace
+proxmox-backup-client restore host/my-host/1700000000 root.pxar /restore/target --ns my-namespace
 
 # Windows, application-consistent backup via VSS (captures open/locked files):
-pbs-client-win backup root.pxar:C:\Data --vss --ns my-namespace --backup-id my-host
+proxmox-backup-client backup root.pxar:C:\Data --vss --ns my-namespace --backup-id my-host
 
 # Windows, whole-volume image backup via VSS (FIDX), and restore to a raw image:
-pbs-client-win backup disk0.img:C: --image --ns my-namespace --backup-id my-host
-pbs-client-win restore host/my-host/1700000000 disk0.img /restore/disk0.img --image --ns my-namespace
+proxmox-backup-client backup disk0.img:C: --image --ns my-namespace --backup-id my-host
+proxmox-backup-client restore host/my-host/1700000000 disk0.img /restore/disk0.img --image --ns my-namespace
 
 # encrypted (interoperable with the official client's --keyfile):
 #   proxmox-backup-client key create --kdf none key.json
-pbs-client-win backup root.pxar:/path --ns ns --keyfile key.json
-pbs-client-win restore host/my-host/1700000000 root.pxar /target --ns ns --keyfile key.json
+proxmox-backup-client backup root.pxar:/path --ns ns --keyfile key.json
+proxmox-backup-client restore host/my-host/1700000000 root.pxar /target --ns ns --keyfile key.json
 ```
 
 ## Architecture (summary)

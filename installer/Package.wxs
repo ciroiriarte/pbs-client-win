@@ -48,7 +48,7 @@
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
       <!-- CLI Binary -->
       <Component Id="C_PbsCliExe" Guid="3E4D5F6A-7B8C-9D0E-1F2A-3B4C5D6E7F8A">
-        <File Id="F_pbs_client_win_exe" Source="$(var.PublishDir)pbs-client-win.exe" KeyPath="yes" />
+        <File Id="F_pbs_client_win_exe" Source="$(var.PublishDir)proxmox-backup-client.exe" KeyPath="yes" />
         <Environment Id="E_Path" Name="PATH" Value="[INSTALLFOLDER]" Permanent="no" Part="last" Action="set" System="yes" />
       </Component>
 
@@ -116,12 +116,12 @@
          without Defender (e.g. Server Core with it removed) never blocks the install. -->
     <SetProperty Id="CA_AddDefenderExclusions"
                  Sequence="execute"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;Add-MpPreference -ExclusionProcess pbs-client-win.exe,Pbs.Service.exe -ExclusionPath '[PROGRAMDATAFOLDER]' -ErrorAction SilentlyContinue&quot;"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;Add-MpPreference -ExclusionProcess proxmox-backup-client.exe,Pbs.Service.exe -ExclusionPath '[PROGRAMDATAFOLDER]' -ErrorAction SilentlyContinue&quot;"
                  Before="CA_AddDefenderExclusions" />
 
     <SetProperty Id="CA_RemoveDefenderExclusions"
                  Sequence="execute"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;Remove-MpPreference -ExclusionProcess pbs-client-win.exe,Pbs.Service.exe -ExclusionPath '[PROGRAMDATAFOLDER]' -ErrorAction SilentlyContinue&quot;"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;Remove-MpPreference -ExclusionProcess proxmox-backup-client.exe,Pbs.Service.exe -ExclusionPath '[PROGRAMDATAFOLDER]' -ErrorAction SilentlyContinue&quot;"
                  Before="CA_RemoveDefenderExclusions" />
 
     <CustomAction Id="CA_AddDefenderExclusions"

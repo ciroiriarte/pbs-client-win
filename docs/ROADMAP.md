@@ -56,7 +56,7 @@ Remaining vs the official client:
 
 - **M4 — Service, scheduling, packaging, code signing.** _(in progress)_
   - **Done (verified on Linux CI):** `Pbs.Service` — a .NET Generic Host worker that schedules
-    backup jobs from a JSON config (cron via Cronos), launches the verified `pbs-client-win` CLI as a
+    backup jobs from a JSON config (cron via Cronos), launches the verified `proxmox-backup-client` CLI as a
     subprocess (secrets passed via child-process env, never argv), serializes per repository+backup-id,
     then runs `prune` for retention. Sub-commands `run` / `install` / `uninstall` / `validate-config`.
     Builds + 5 unit tests green; `validate-config` round-trips the sample config.

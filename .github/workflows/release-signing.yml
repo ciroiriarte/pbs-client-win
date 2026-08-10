@@ -51,7 +51,7 @@ jobs:
       - name: Zip Executables for SignPath Signing
         shell: pwsh
         run: |
-          Compress-Archive -Path publish/pbs-client-win.exe, publish/Pbs.Service.exe -DestinationPath unsigned-binaries.zip
+          Compress-Archive -Path publish/proxmox-backup-client.exe, publish/Pbs.Service.exe -DestinationPath unsigned-binaries.zip
 
       - name: Sign Executables via SignPath
         uses: signpath/github-action-submit-signing-request@v1

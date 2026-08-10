@@ -41,7 +41,7 @@ public static class ServiceConfigLoader
         }
 
         var extension = OperatingSystem.IsWindows() ? ".exe" : string.Empty;
-        return Path.Combine(AppContext.BaseDirectory, $"pbs-client-win{extension}");
+        return Path.Combine(AppContext.BaseDirectory, $"proxmox-backup-client{extension}");
     }
 
     private static string? ReadOption(IReadOnlyList<string> args, string name)

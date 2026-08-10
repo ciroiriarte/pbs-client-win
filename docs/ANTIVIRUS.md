@@ -25,13 +25,13 @@ When real-time on-access scanning monitors these operations:
 The WiX v4 installer (`pbs-client-win.msi`) includes a deferred custom action that runs during installation to add Microsoft Defender exclusions automatically via PowerShell:
 
 ```powershell
-Add-MpPreference -ExclusionProcess "pbs-client-win.exe", "Pbs.Service.exe" -ExclusionPath "C:\ProgramData\pbs-client-win\"
+Add-MpPreference -ExclusionProcess "proxmox-backup-client.exe", "Pbs.Service.exe" -ExclusionPath "C:\ProgramData\pbs-client-win\"
 ```
 
 Upon uninstallation, the installer automatically cleans up these exclusions:
 
 ```powershell
-Remove-MpPreference -ExclusionProcess "pbs-client-win.exe", "Pbs.Service.exe" -ExclusionPath "C:\ProgramData\pbs-client-win\"
+Remove-MpPreference -ExclusionProcess "proxmox-backup-client.exe", "Pbs.Service.exe" -ExclusionPath "C:\ProgramData\pbs-client-win\"
 ```
 
 ### Key Installer Behavior
@@ -52,7 +52,7 @@ msiexec /i pbs-client-win-1.0.0-x64.msi AV_EXCLUSIONS=0 /qn
 3. Under *Virus & threat protection settings*, click **Manage settings**.
 4. Scroll to *Exclusions* and click **Add or remove exclusions**.
 5. Click **Add an exclusion**:
-   - **Process**: `pbs-client-win.exe`
+   - **Process**: `proxmox-backup-client.exe`
    - **Process**: `Pbs.Service.exe`
    - **Folder**: `C:\Program Files\pbs-client-win\`
    - **Folder**: `C:\ProgramData\pbs-client-win\`
@@ -62,7 +62,7 @@ Run an elevated PowerShell prompt:
 
 ```powershell
 # Process Exclusions
-Add-MpPreference -ExclusionProcess "pbs-client-win.exe"
+Add-MpPreference -ExclusionProcess "proxmox-backup-client.exe"
 Add-MpPreference -ExclusionProcess "Pbs.Service.exe"
 
 # Path Exclusions
@@ -76,7 +76,7 @@ Add-MpPreference -ExclusionPath "C:\ProgramData\pbs-client-win"
    `Computer Configuration` > `Policies` > `Administrative Templates` > `Windows Components` > `Microsoft Defender Antivirus` > `Exclusions`
 3. Configure the policies:
    - **Process Exclusions**: Enable and add:
-     - `C:\Program Files\pbs-client-win\pbs-client-win.exe` = `0`
+     - `C:\Program Files\pbs-client-win\proxmox-backup-client.exe` = `0`
      - `C:\Program Files\pbs-client-win\Pbs.Service.exe` = `0`
    - **Path Exclusions**: Enable and add:
      - `C:\Program Files\pbs-client-win\` = `0`
@@ -93,7 +93,7 @@ Add-MpPreference -ExclusionPath "C:\ProgramData\pbs-client-win"
    - Path: `\Device\HarddiskVolume*\Program Files\pbs-client-win\*`
    - Exclusion Type: `Process Rollup` & `File Inspection`
 4. **Process Exclusion**:
-   - Add process: `pbs-client-win.exe` and `Pbs.Service.exe`
+   - Add process: `proxmox-backup-client.exe` and `Pbs.Service.exe`
 
 ### SentinelOne
 1. Log into the **SentinelOne Management Console**.
@@ -115,7 +115,7 @@ Add-MpPreference -ExclusionPath "C:\ProgramData\pbs-client-win"
    - **Value**: `C:\Program Files\pbs-client-win\` and `C:\ProgramData\pbs-client-win\`
 4. Add Process Exclusion:
    - **Exclusion Type**: Process (Windows)
-   - **Value**: `C:\Program Files\pbs-client-win\pbs-client-win.exe`
+   - **Value**: `C:\Program Files\pbs-client-win\proxmox-backup-client.exe`
    - **Value**: `C:\Program Files\pbs-client-win\Pbs.Service.exe`
 
 ### ESET Endpoint Security / ESET NOD32
@@ -125,7 +125,7 @@ Add-MpPreference -ExclusionPath "C:\ProgramData\pbs-client-win"
    - `C:\Program Files\pbs-client-win\*.*`
    - `C:\ProgramData\pbs-client-win\*.*`
 4. Under **Processes Exclusions**, add:
-   - `C:\Program Files\pbs-client-win\pbs-client-win.exe`
+   - `C:\Program Files\pbs-client-win\proxmox-backup-client.exe`
    - `C:\Program Files\pbs-client-win\Pbs.Service.exe`
 
 ---
@@ -134,7 +134,7 @@ Add-MpPreference -ExclusionPath "C:\ProgramData\pbs-client-win"
 
 | Target Binary / Directory | Exclusion Type | Purpose | Recommended Policy |
 | :--- | :--- | :--- | :--- |
-| `C:\Program Files\pbs-client-win\pbs-client-win.exe` | Process / Executable | High-throughput backup & restore operations | Exclude from real-time on-access scanning |
+| `C:\Program Files\pbs-client-win\proxmox-backup-client.exe` | Process / Executable | High-throughput backup & restore operations | Exclude from real-time on-access scanning |
 | `C:\Program Files\pbs-client-win\Pbs.Service.exe` | Process / Service | Supervisor process launching CLI subprocesses | Exclude from real-time process monitoring |
 | `C:\Program Files\pbs-client-win\` | Directory / Path | Installation directory for CLI and Service binaries | Exclude path |
 | `C:\ProgramData\pbs-client-win\` | Directory / Path | Working directory, config file, and logs | Exclude path |
