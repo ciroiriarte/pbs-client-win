@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Org.BouncyCastle.Crypto.Engines;
 using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Modes;
@@ -19,6 +20,10 @@ public static class KeyFile
 {
     private const int TagSize = 16;
     private const int IvSize = 16;
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+    };
 
     /// <summary>Load the raw 32-byte encryption key. A passphrase is required for protected keyfiles.</summary>
     public static byte[] LoadRawKey(string path, string? passphrase = null)
@@ -64,8 +69,14 @@ public static class KeyFile
     {
         var key = new byte[32];
         RandomNumberGenerator.Fill(key);
-        var fingerprint = new CryptConfig(key).FingerprintHex();
+        return Write(path, key, passphrase);
+    }
 
+    /// <summary>Write <paramref name="key"/> as a PBS keyfile, preserving <paramref name="created"/> when supplied.</summary>
+    public static string Write(string path, byte[] key, string? passphrase, string? created = null)
+    {
+        key = Exactly32(key, "keyfile key");
+        var fingerprint = new CryptConfig(key).FingerprintHex();
         object? kdf;
         string dataB64;
         if (string.IsNullOrEmpty(passphrase))
@@ -94,16 +105,54 @@ public static class KeyFile
         }
 
         var now = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz");
+        created ??= now;
         var doc = new Dictionary<string, object?>
         {
             ["kdf"] = kdf,
-            ["created"] = now,
+            ["created"] = created,
             ["modified"] = now,
             ["data"] = dataB64,
             ["fingerprint"] = fingerprint,
         };
-        File.WriteAllText(path, JsonSerializer.Serialize(doc));
+        File.WriteAllText(path, JsonSerializer.Serialize(doc, JsonOptions));
         return fingerprint;
+    }
+
+    /// <summary>Re-encrypt an existing keyfile with <paramref name="newPassphrase"/> without changing the raw key.</summary>
+    public static string ChangePassphrase(string path, string? oldPassphrase, string? newPassphrase)
+    {
+        if (string.IsNullOrEmpty(newPassphrase))
+            throw new ArgumentException("new passphrase is required");
+        var meta = ReadMetadata(path);
+        var key = LoadRawKey(path, oldPassphrase);
+        return Write(path, key, newPassphrase, meta.Created);
+    }
+
+    /// <summary>JSON form escrowed by a master public key: unprotected 32-byte key and key metadata.</summary>
+    public static string UnprotectedKeyfileJson(byte[] key, string? created, string? modified)
+    {
+        key = Exactly32(key, "keyfile key");
+        var now = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz");
+        var doc = new Dictionary<string, object?>
+        {
+            ["kdf"] = null,
+            ["created"] = created ?? now,
+            ["modified"] = modified ?? now,
+            ["data"] = Convert.ToBase64String(key),
+            ["fingerprint"] = new CryptConfig(key).FingerprintHex(),
+        };
+        return JsonSerializer.Serialize(doc, JsonOptions);
+    }
+
+    /// <summary>Read the non-secret metadata fields from a keyfile.</summary>
+    public static KeyFileMetadata ReadMetadata(string path)
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        var root = doc.RootElement;
+        return new KeyFileMetadata(
+            GetString(root, "created"),
+            GetString(root, "modified"),
+            GetString(root, "fingerprint"));
     }
 
     private static (byte[] ciphertext, byte[] tag) GcmEncrypt(byte[] key, byte[] iv, byte[] plaintext)
@@ -132,4 +181,9 @@ public static class KeyFile
         len += cipher.DoFinal(output, len);
         return output[..len];
     }
+
+    private static string? GetString(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 }
+
+public sealed record KeyFileMetadata(string? Created, string? Modified, string? Fingerprint);

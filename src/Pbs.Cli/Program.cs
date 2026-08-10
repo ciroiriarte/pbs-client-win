@@ -74,8 +74,18 @@ try
             return 1;
         case "key" when positionals is ["create", var keyPath, ..]:
             return KeyCreate(keyPath, flags);
+        case "key" when positionals is ["change-passphrase", var keyPath, ..]:
+            return KeyChangePassphrase(keyPath, flags);
+        case "key" when positionals is ["create-master-key", ..]:
+            return KeyCreateMasterKey(positionals.Skip(1).ToList(), flags);
+        case "key" when positionals is ["import-master-pubkey", var pemPath, ..]:
+            return KeyImportMasterPubkey(pemPath);
+        case "key" when positionals is ["show-master-pubkey", ..]:
+            return KeyShowMasterPubkey(positionals.Skip(1).ToList());
+        case "key" when positionals is ["paperkey", ..]:
+            return KeyPaperkey(positionals.Skip(1).ToList(), flags);
         case "key":
-            Console.Error.WriteLine("usage: proxmox-backup-client key create <path> [--kdf none|scrypt] [--key-password <pw>]");
+            Console.Error.WriteLine("usage: proxmox-backup-client key create|change-passphrase|create-master-key|import-master-pubkey|show-master-pubkey|paperkey ...");
             return 1;
         default:
             Console.Error.WriteLine($"unknown command: {args[0]}");
@@ -123,7 +133,7 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
     if (useVss) Console.WriteLine($"  VSS: snapshotting {string.Join(", ", volumes)}");
 
     await using var session = await BackupSession.OpenAsync(opts, backupType, backupId, backupTime);
-    if (crypt is not null) { session.SetKeyFingerprint(crypt.FingerprintHex()); Console.WriteLine($"  encryption: on (key {crypt.FingerprintHex()[..17]}…)"); }
+    if (crypt is not null) { session.SetKeyFingerprint(crypt.Config.FingerprintHex()); Console.WriteLine($"  encryption: on (key {crypt.Config.FingerprintHex()[..17]}…)"); }
     var catalogRoots = new List<(string Stored, PxarDirNode Tree)>(); // for the .pcat1 catalog (file mode)
     foreach (var (name, target) in items)
     {
@@ -134,7 +144,7 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
             stored = StoredImageName(name);
             var (stream, size) = snapshot.OpenImage(target);
             Console.WriteLine($"  {name}: {target} -> {stored} ({size} bytes, fixed image)");
-            stats = await FixedImage.UploadAsync(session, stored, stream, size, crypt: crypt, incremental: incremental);
+            stats = await FixedImage.UploadAsync(session, stored, stream, size, crypt: crypt?.Config, incremental: incremental);
         }
         else
         {
@@ -147,7 +157,7 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
             using var pxar = new MemoryStream();
             await PxarEncoder.EncodeAsync(tree, pxar);
             Console.WriteLine($"  {name}: {path} -> {stored} ({pxar.Length} bytes)");
-            stats = await DynamicArchive.UploadAsync(session, stored, pxar.ToArray(), crypt: crypt, incremental: incremental);
+            stats = await DynamicArchive.UploadAsync(session, stored, pxar.ToArray(), crypt: crypt?.Config, incremental: incremental);
         }
         Console.WriteLine($"    chunks: {stats.TotalChunks} total, {stats.UploadedChunks} uploaded, {stats.ReusedChunks} reused");
     }
@@ -163,8 +173,17 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
             forest.Children.Add(archiveDir);
         }
         var catalogBytes = PxarCatalog.Build(forest);
-        var catStats = await DynamicArchive.UploadAsync(session, "catalog.pcat1.didx", catalogBytes, crypt: crypt, incremental: incremental);
+        var catStats = await DynamicArchive.UploadAsync(session, "catalog.pcat1.didx", catalogBytes, crypt: crypt?.Config, incremental: incremental);
         Console.WriteLine($"  catalog.pcat1.didx: {catalogBytes.Length} bytes ({catStats.UploadedChunks} uploaded)");
+    }
+
+    if (flags.TryGetValue("master-pubkey-file", out var masterPubkeyFile))
+    {
+        if (crypt is null) throw new ArgumentException("--master-pubkey-file requires --keyfile/PBS_KEYFILE");
+        var unprotected = KeyFile.UnprotectedKeyfileJson(crypt.RawKey, crypt.Metadata?.Created, crypt.Metadata?.Modified);
+        var blob = MasterKey.BuildRsaEncryptedKeyBlob(File.ReadAllText(masterPubkeyFile), unprotected);
+        await session.UploadBlobAsync("rsa-encrypted.key.blob", blob);
+        Console.WriteLine("uploaded rsa-encrypted.key.blob");
     }
 
     snapshot.Complete();
@@ -180,7 +199,7 @@ static async Task<int> RestoreAsync(List<string> positionals, Dictionary<string,
 
     var opts = ResolveConnection(flags);
     var (type, id, time) = ParseSnapshot(snapshot);
-    var crypt = LoadCrypt(flags);
+    var crypt = LoadCrypt(flags)?.Config;
 
     await using var reader = await ReaderSession.OpenAsync(opts, type, id, time);
     if (flags.ContainsKey("image"))
@@ -368,7 +387,7 @@ static async Task<int> CatalogDumpAsync(string snapshot, Dictionary<string, stri
 {
     var opts = ResolveConnection(flags);
     var (type, id, time) = ParseSnapshot(snapshot);
-    var crypt = LoadCrypt(flags);
+    var crypt = LoadCrypt(flags)?.Config;
 
     await using var reader = await ReaderSession.OpenAsync(opts, type, id, time);
     using var buffer = new MemoryStream();
@@ -392,6 +411,56 @@ static int KeyCreate(string path, Dictionary<string, string> flags)
 
     var fingerprint = KeyFile.Create(path, passphrase);
     Console.WriteLine($"created key {path} (kdf {kdf}, fingerprint {fingerprint})");
+    return 0;
+}
+
+static int KeyChangePassphrase(string path, Dictionary<string, string> flags)
+{
+    var oldPassphrase = flags.GetValueOrDefault("key-password")
+                        ?? Environment.GetEnvironmentVariable("PBS_ENCRYPTION_PASSWORD")
+                        ?? ReadSecret("Old key password: ");
+    var newPassphrase = flags.GetValueOrDefault("new-password") ?? ReadSecret("New key password: ");
+    var fingerprint = KeyFile.ChangePassphrase(path, oldPassphrase, newPassphrase);
+    Console.WriteLine($"updated key {path} (fingerprint {fingerprint})");
+    return 0;
+}
+
+static int KeyCreateMasterKey(List<string> positionals, Dictionary<string, string> flags)
+{
+    var publicPath = positionals.ElementAtOrDefault(0) ?? "master-public.pem";
+    var privatePath = positionals.ElementAtOrDefault(1) ?? "master-private.pem";
+    var passphrase = flags.GetValueOrDefault("key-password");
+    MasterKey.CreateMasterKey(publicPath, privatePath, passphrase);
+    Console.WriteLine($"created master public key {publicPath}");
+    Console.WriteLine($"created master private key {privatePath}");
+    return 0;
+}
+
+static int KeyImportMasterPubkey(string path)
+{
+    var (fingerprint, keySize) = MasterKey.ValidatePublicKey(path);
+    Console.WriteLine($"validated master public key {path} ({keySize} bits, fingerprint {fingerprint})");
+    return 0;
+}
+
+static int KeyShowMasterPubkey(List<string> positionals)
+{
+    Console.Write(MasterKey.ShowMasterPubKey(positionals.ElementAtOrDefault(0) ?? "master-public.pem"));
+    return 0;
+}
+
+static int KeyPaperkey(List<string> positionals, Dictionary<string, string> flags)
+{
+    var format = flags.GetValueOrDefault("output-format", "text");
+    if (format != "text") throw new ArgumentException("--output-format must be 'text'");
+    var path = positionals.ElementAtOrDefault(0) ?? flags.GetValueOrDefault("keyfile") ?? Environment.GetEnvironmentVariable("PBS_KEYFILE")
+        ?? throw new ArgumentException("paperkey requires <path> or --keyfile/PBS_KEYFILE");
+
+    using var doc = JsonDocument.Parse(File.ReadAllText(path));
+    Console.WriteLine("-----BEGIN PROXMOX BACKUP KEY-----");
+    // Upstream can render a QR code for paperkey recovery; this client intentionally emits text only.
+    Console.WriteLine(JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine("-----END PROXMOX BACKUP KEY-----");
     return 0;
 }
 
@@ -593,12 +662,13 @@ static ISnapshotSource CreateSnapshotSource(bool useVss, IReadOnlyCollection<str
 #endif
 }
 
-static CryptConfig? LoadCrypt(Dictionary<string, string> flags)
+static LoadedCrypt? LoadCrypt(Dictionary<string, string> flags)
 {
     var keyfile = flags.GetValueOrDefault("keyfile") ?? Environment.GetEnvironmentVariable("PBS_KEYFILE");
     if (string.IsNullOrEmpty(keyfile)) return null;
     var passphrase = flags.GetValueOrDefault("key-password") ?? Environment.GetEnvironmentVariable("PBS_ENCRYPTION_PASSWORD");
-    return new CryptConfig(KeyFile.LoadRawKey(keyfile, passphrase));
+    var rawKey = KeyFile.LoadRawKey(keyfile, passphrase);
+    return new LoadedCrypt(new CryptConfig(rawKey), rawKey, keyfile, KeyFile.ReadMetadata(keyfile));
 }
 
 static string StoredArchiveName(string name) =>
@@ -677,15 +747,22 @@ static void PrintUsage(string version)
     Console.WriteLine("  proxmox-backup-client status --repository <repo>");
     Console.WriteLine("  proxmox-backup-client catalog dump <type/id/time> --repository <repo> [--ns <ns>]");
     Console.WriteLine("  proxmox-backup-client key create <path> [--kdf none|scrypt] [--key-password <pw>]");
+    Console.WriteLine("  proxmox-backup-client key change-passphrase <path> [--key-password <old>] [--new-password <new>]");
+    Console.WriteLine("  proxmox-backup-client key create-master-key [public.pem] [private.pem] [--key-password <pw>]");
+    Console.WriteLine("  proxmox-backup-client key import-master-pubkey <path>");
+    Console.WriteLine("  proxmox-backup-client key show-master-pubkey [path]");
+    Console.WriteLine("  proxmox-backup-client key paperkey [path] [--output-format text]");
     Console.WriteLine();
     Console.WriteLine("backup file mode also accepts repeatable --exclude <glob> (e.g. --exclude *.tmp --exclude /logs/**).");
     Console.WriteLine("snapshot list accepts --output-format json.");
     Console.WriteLine();
     Console.WriteLine("Repository: [AUTHID@]HOST[:PORT]:DATASTORE  (e.g. root@pam!tok@pbs.example:store01 or root@pam@pbs.example:store01 for ticket auth)");
     Console.WriteLine("Credentials: --password/PBS_PASSWORD (token secret or login password), --auth token|ticket, --fingerprint/PBS_FINGERPRINT.");
-    Console.WriteLine("Encryption: --keyfile/PBS_KEYFILE (a 'key create --kdf none' keyfile); AES-256-GCM,");
-    Console.WriteLine("            interoperable with the official client's --keyfile.");
+    Console.WriteLine("Encryption: --keyfile/PBS_KEYFILE [--master-pubkey-file <pem>]; AES-256-GCM,");
+    Console.WriteLine("            interoperable with the official client's --keyfile and key commands.");
     Console.WriteLine();
     Console.WriteLine("This is an independent, community project. It is NOT produced, endorsed by, or");
     Console.WriteLine("affiliated with Proxmox Server Solutions GmbH. \"Proxmox\" is their trademark.");
 }
+
+internal sealed record LoadedCrypt(CryptConfig Config, byte[] RawKey, string KeyfilePath, KeyFileMetadata? Metadata);

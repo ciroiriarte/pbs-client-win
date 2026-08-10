@@ -50,14 +50,17 @@ Remaining vs the official client:
 - **catalog shell** (interactive browse) — the on-disk catalog is done; only the interactive REPL is missing.
 - **mount / map / unmap** — FUSE + block-device mechanisms are Linux-specific; the Windows equivalent
   (attach a restored image as a VHD, or a projected filesystem) is a separate design.
-- **advanced key mgmt** — `key change-passphrase`, master/RSA key escrow, `paperkey`.
 
 Also done: **change-owner** (POST `change-owner` with backup-type/backup-id/new-owner), **task**
-`list`/`log`/`stop` (`/nodes/{node}/tasks`, node defaults to `localhost`), and **login/logout**
+`list`/`log`/`stop` (`/nodes/{node}/tasks`, node defaults to `localhost`), **login/logout**
 (ticket + CSRF cookie auth via `/access/ticket`, with TOTP/recovery **2FA**; ticket cached per
-host+user, used for both the JSON API and the backup/reader upgrade). API-token auth remains the
-recommended path for unattended backups. All verified against a live PBS — the 2FA path with a real
-TOTP-enrolled user.
+host+user, used for both the JSON API and the backup/reader upgrade), and **advanced key management**
+— `key change-passphrase`, `paperkey`, and master-key/RSA escrow (`create-master-key`,
+`import/show-master-pubkey`, and `backup --master-pubkey-file` storing an `rsa-encrypted.key.blob`,
+RSA PKCS#1 v1.5 over the unprotected keyfile JSON). API-token auth remains the recommended path for
+unattended backups. All verified against a live PBS and the official client — re-wrapped keys decrypt
+under the new passphrase (and reject the old), the 2FA path with a real TOTP-enrolled user, and the
+master key recovers the exact data key from our escrow blob.
 
 ## Next
 
