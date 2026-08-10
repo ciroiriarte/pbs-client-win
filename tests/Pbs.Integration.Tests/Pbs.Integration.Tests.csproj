@@ -27,6 +27,7 @@
     <ProjectReference Include="..\..\src\Pbs.Abstractions\Pbs.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\Pbs.Pxar\Pbs.Pxar.csproj" />
     <ProjectReference Include="..\..\src\Pbs.Cli\Pbs.Cli.csproj" />
+    <ProjectReference Include="..\..\src\Pbs.Nbd\Pbs.Nbd.csproj" />
   </ItemGroup>
 
 </Project>

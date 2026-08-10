@@ -20,6 +20,7 @@
     <ProjectReference Include="..\Pbs.Protocol\Pbs.Protocol.csproj" />
     <ProjectReference Include="..\Pbs.Chunker\Pbs.Chunker.csproj" />
     <ProjectReference Include="..\Pbs.Pxar\Pbs.Pxar.csproj" />
+    <ProjectReference Include="..\Pbs.Nbd\Pbs.Nbd.csproj" />
   </ItemGroup>
 
   <ItemGroup Condition="$(TargetFramework.EndsWith('-windows'))">

@@ -1,7 +1,10 @@
 using System.Reflection;
+using System.Diagnostics;
+using System.Net;
 using System.Text.Json;
 using Pbs.Abstractions;
 using Pbs.Cli;
+using Pbs.Nbd;
 using Pbs.Protocol;
 using Pbs.Pxar;
 
@@ -31,6 +34,10 @@ try
             return Logout(positionals, flags);
         case "restore":
             return await RestoreAsync(positionals, flags, multi);
+        case "map":
+            return await MapAsync(positionals, flags);
+        case "unmap":
+            return await UnmapAsync(positionals, flags);
         case "snapshot" when positionals is ["list", ..]:
         case "snapshots": // alias
             return await SnapshotsAsync(flags);
@@ -222,6 +229,90 @@ static async Task<int> RestoreAsync(List<string> positionals, Dictionary<string,
     await PxarDecoder.ExtractAsync(buffer, target, patterns);
     Console.WriteLine($"restored {stored} -> {target} ({buffer.Length} bytes)");
     return 0;
+}
+
+static async Task<int> MapAsync(List<string> positionals, Dictionary<string, string> flags)
+{
+    if (positionals.Count != 2) { Console.Error.WriteLine("map: expected <snapshot> <archive>"); return 1; }
+
+    var opts = ResolveConnection(flags);
+    var (type, id, time) = ParseSnapshot(positionals[0]);
+    var stored = StoredImageName(positionals[1]);
+    var crypt = LoadCrypt(flags)?.Config;
+    var bind = IPAddress.Parse(flags.GetValueOrDefault("bind", "127.0.0.1"));
+    var port = int.Parse(flags.GetValueOrDefault("port", "10809"));
+    var exportName = flags.GetValueOrDefault("export-name", stored);
+    var device = flags.GetValueOrDefault("device");
+
+    using var cts = new CancellationTokenSource();
+    ConsoleCancelEventHandler? cancelHandler = (_, e) =>
+    {
+        e.Cancel = true;
+        cts.Cancel();
+    };
+    Console.CancelKeyPress += cancelHandler;
+
+    string? mappedDevice = null;
+    try
+    {
+        await using var reader = await ReaderSession.OpenAsync(opts, type, id, time, cts.Token);
+        var size = await reader.GetArchiveSizeAsync(stored, crypt, cts.Token);
+        var source = new ReaderSessionBlockSource(reader, stored, crypt, size);
+        var server = new NbdServer(source, exportName);
+        var listenTask = server.ListenAsync(bind, port, cts.Token);
+
+        while (server.LocalEndPoint is null && !listenTask.IsCompleted)
+            await Task.Delay(25, cts.Token);
+        if (listenTask.IsFaulted)
+            await listenTask;
+
+        var endpoint = server.LocalEndPoint ?? throw new InvalidOperationException("NBD listener did not bind.");
+        Console.WriteLine($"NBD export '{exportName}' serving {stored} ({size} bytes) at {endpoint.Address}:{endpoint.Port} read-only");
+
+        if (!string.IsNullOrWhiteSpace(device))
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                Console.WriteLine("wnbd-client attach is Windows-only; server will keep serving.");
+                Console.WriteLine($"Run on Windows: wnbd-client map {device} {endpoint.Address} --port {endpoint.Port} --export-name {exportName}");
+            }
+            else if (FindOnPath("wnbd-client.exe") is null && FindOnPath("wnbd-client") is null)
+            {
+                Console.WriteLine("wnbd-client was not found on PATH; server will keep serving.");
+                Console.WriteLine($"Run manually: wnbd-client map {device} {endpoint.Address} --port {endpoint.Port} --export-name {exportName}");
+            }
+            else
+            {
+                var exit = await RunProcessAsync("wnbd-client", $"map {QuoteArg(device)} {endpoint.Address} --port {endpoint.Port} --export-name {QuoteArg(exportName)}", cts.Token);
+                if (exit != 0)
+                    return exit;
+                mappedDevice = device;
+                Console.WriteLine($"mapped {device}");
+            }
+        }
+
+        Console.WriteLine("Press Ctrl-C to stop serving.");
+        await listenTask;
+        return 0;
+    }
+    finally
+    {
+        Console.CancelKeyPress -= cancelHandler;
+        if (!string.IsNullOrWhiteSpace(mappedDevice) && OperatingSystem.IsWindows())
+            await RunProcessAsync("wnbd-client", $"unmap {QuoteArg(mappedDevice)}", CancellationToken.None);
+    }
+}
+
+static async Task<int> UnmapAsync(List<string> positionals, Dictionary<string, string> flags)
+{
+    _ = flags;
+    if (positionals.Count != 1) { Console.Error.WriteLine("unmap: expected <instance>"); return 1; }
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.Error.WriteLine("unmap is Windows-only because it invokes wnbd-client.");
+        return 1;
+    }
+    return await RunProcessAsync("wnbd-client", $"unmap {QuoteArg(positionals[0])}", CancellationToken.None);
 }
 
 static async Task<int> SnapshotsAsync(Dictionary<string, string> flags)
@@ -566,6 +657,28 @@ static PbsConnectionOptions ResolveConnection(Dictionary<string, string> flags)
     };
 }
 
+static string? FindOnPath(string fileName)
+{
+    var paths = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+        .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
+    return paths.Select(path => Path.Combine(path, fileName)).FirstOrDefault(File.Exists);
+}
+
+static async Task<int> RunProcessAsync(string fileName, string arguments, CancellationToken ct)
+{
+    using var process = Process.Start(new ProcessStartInfo
+    {
+        FileName = fileName,
+        Arguments = arguments,
+        UseShellExecute = false,
+    }) ?? throw new InvalidOperationException($"failed to start {fileName}");
+    await process.WaitForExitAsync(ct);
+    return process.ExitCode;
+}
+
+static string QuoteArg(string value) =>
+    "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
+
 static string ResolveServer(Dictionary<string, string> flags)
 {
     var server = flags.GetValueOrDefault("server");
@@ -734,6 +847,8 @@ static void PrintUsage(string version)
     Console.WriteLine("  proxmox-backup-client login <user@realm> --server <host[:port]> [--fingerprint <fp>]");
     Console.WriteLine("  proxmox-backup-client logout <user@realm> --server <host[:port]>");
     Console.WriteLine("  proxmox-backup-client restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>] [--pattern <glob>]");
+    Console.WriteLine("  proxmox-backup-client map <type/id/time> <name.img> --repository <repo> [--ns <ns>] [--bind 127.0.0.1] [--port 10809] [--export-name <name>] [--device <instance>]");
+    Console.WriteLine("  proxmox-backup-client unmap <instance>");
     Console.WriteLine("  proxmox-backup-client snapshot list --repository <repo> [--ns <ns>]");
     Console.WriteLine("  proxmox-backup-client snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");
     Console.WriteLine("  proxmox-backup-client snapshot notes <type/id/time> [text] --repository <repo> [--ns <ns>]");
