@@ -16,6 +16,9 @@ public sealed class ReaderSession : IAsyncDisposable
     public const string ProtocolId = "proxmox-backup-reader-protocol-v1";
 
     private readonly HttpClient _http;
+    private readonly ChunkCache _chunkCache = new();
+    private readonly Dictionary<string, ParsedArchiveIndex> _parsedIndexes = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim _parsedIndexesLock = new(1, 1);
 
     private ReaderSession(HttpClient http) => _http = http;
 
@@ -45,6 +48,36 @@ public sealed class ReaderSession : IAsyncDisposable
         var blob = await GetBytesAsync($"chunk?digest={digest.ToHex()}", ct);
         return crypt is null ? DataBlob.Decode(blob) : crypt.DecryptBlob(blob);
     }
+
+    public async Task<byte[]> ReadRangeAsync(string archiveName, long offset, long length, CryptConfig? crypt = null, CancellationToken ct = default)
+    {
+        var index = await GetParsedArchiveIndexAsync(archiveName, ct);
+        return await ChunkRangeReader.ReadAsync(
+            index.Spans,
+            offset,
+            length,
+            async (digest, token) =>
+            {
+                if (_chunkCache.TryGet(digest, out var cached))
+                    return cached;
+
+                var chunk = await DownloadChunkAsync(digest, crypt, token);
+                VerifyChunkDigest(digest, chunk, crypt);
+                _chunkCache.Add(digest, chunk);
+                return chunk;
+            },
+            ct);
+    }
+
+    public async Task<long> GetArchiveSizeAsync(string archiveName, CryptConfig? crypt = null, CancellationToken ct = default)
+    {
+        _ = crypt;
+        var index = await GetParsedArchiveIndexAsync(archiveName, ct);
+        return index.TotalSize;
+    }
+
+    public Stream OpenArchiveStream(string archiveName, long size, CryptConfig? crypt = null) =>
+        new ArchiveStream(this, archiveName, size, crypt);
 
     /// <summary>
     /// Restore a whole dynamic archive: download its <c>.didx</c> index, then fetch and decode each
@@ -105,6 +138,66 @@ public sealed class ReaderSession : IAsyncDisposable
         return written;
     }
 
+    private async Task<ParsedArchiveIndex> GetParsedArchiveIndexAsync(string archiveName, CancellationToken ct)
+    {
+        await _parsedIndexesLock.WaitAsync(ct);
+        try
+        {
+            if (_parsedIndexes.TryGetValue(archiveName, out var cached))
+                return cached;
+
+            var indexBytes = await DownloadFileAsync(archiveName, ct);
+            var parsed = ParseArchiveIndex(indexBytes);
+            _parsedIndexes[archiveName] = parsed;
+            return parsed;
+        }
+        finally
+        {
+            _parsedIndexesLock.Release();
+        }
+    }
+
+    private static ParsedArchiveIndex ParseArchiveIndex(ReadOnlySpan<byte> indexBytes)
+    {
+        if (indexBytes.Length < 8)
+            throw new InvalidDataException("archive index shorter than magic");
+
+        if (indexBytes.Slice(0, 8).SequenceEqual(FileFormats.DynamicSizedChunkIndexMagic))
+        {
+            var entries = DynamicIndex.Parse(indexBytes);
+            var spans = new List<ChunkSpan>(entries.Count);
+            long start = 0;
+            foreach (var entry in entries)
+            {
+                spans.Add(new ChunkSpan(start, entry.EndOffset, entry.Digest));
+                start = entry.EndOffset;
+            }
+            return new ParsedArchiveIndex(IndexType.Dynamic, start, spans);
+        }
+
+        if (indexBytes.Slice(0, 8).SequenceEqual(FileFormats.FixedSizedChunkIndexMagic))
+        {
+            var (size, chunkSize, digests) = FixedIndex.Parse(indexBytes);
+            var spans = new List<ChunkSpan>(digests.Count);
+            for (int i = 0; i < digests.Count; i++)
+            {
+                var start = i * chunkSize;
+                var end = Math.Min(start + chunkSize, size);
+                spans.Add(new ChunkSpan(start, end, digests[i]));
+            }
+            return new ParsedArchiveIndex(IndexType.Fixed, size, spans);
+        }
+
+        throw new InvalidDataException("unknown archive index magic");
+    }
+
+    private static void VerifyChunkDigest(ChunkDigest expected, byte[] chunk, CryptConfig? crypt)
+    {
+        var actual = crypt is null ? ChunkDigest.Compute(chunk) : ChunkDigest.FromBytes(crypt.ComputeDigest(chunk));
+        if (actual != expected)
+            throw new InvalidDataException($"restored chunk digest mismatch: index {expected}, data {actual}");
+    }
+
     private async Task<byte[]> GetBytesAsync(string path, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, path)
@@ -125,5 +218,89 @@ public sealed class ReaderSession : IAsyncDisposable
     {
         _http.Dispose();
         return ValueTask.CompletedTask;
+    }
+
+    private sealed record ParsedArchiveIndex(IndexType Kind, long TotalSize, IReadOnlyList<ChunkSpan> Spans);
+
+    private sealed class ArchiveStream : Stream
+    {
+        private readonly ReaderSession _session;
+        private readonly string _archiveName;
+        private readonly CryptConfig? _crypt;
+        private long _position;
+
+        public ArchiveStream(ReaderSession session, string archiveName, long size, CryptConfig? crypt)
+        {
+            if (size < 0)
+                throw new ArgumentOutOfRangeException(nameof(size), "size must be non-negative");
+
+            _session = session;
+            _archiveName = archiveName;
+            Length = size;
+            _crypt = crypt;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => true;
+        public override bool CanWrite => false;
+        public override long Length { get; }
+
+        public override long Position
+        {
+            get => _position;
+            set
+            {
+                if (value < 0)
+                    throw new ArgumentOutOfRangeException(nameof(value), "position must be non-negative");
+                _position = value;
+            }
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            ValidateBufferArguments(buffer, offset, count);
+            return ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            ValidateBufferArguments(buffer, offset, count);
+            return ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (buffer.Length == 0 || _position >= Length)
+                return 0;
+
+            var count = Math.Min(buffer.Length, checked((int)Math.Min(int.MaxValue, Length - _position)));
+            var bytes = await _session.ReadRangeAsync(_archiveName, _position, count, _crypt, cancellationToken);
+            bytes.AsSpan().CopyTo(buffer.Span);
+            _position += bytes.Length;
+            return bytes.Length;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            var position = origin switch
+            {
+                SeekOrigin.Begin => offset,
+                SeekOrigin.Current => checked(_position + offset),
+                SeekOrigin.End => checked(Length + offset),
+                _ => throw new ArgumentOutOfRangeException(nameof(origin)),
+            };
+            if (position < 0)
+                throw new IOException("attempted to seek before the beginning of the stream");
+            _position = position;
+            return _position;
+        }
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }
