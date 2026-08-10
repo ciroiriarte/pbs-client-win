@@ -30,7 +30,8 @@ public static class PbsUpgrade
     /// </remarks>
     public static async Task<HttpClient> ConnectAsync(
         PbsConnectionOptions options, string apiPath, string protocolId,
-        string backupType, string backupId, long backupTimeUnix, string? warmupPath, CancellationToken ct = default)
+        string backupType, string backupId, long backupTimeUnix, string? warmupPath,
+        bool benchmark = false, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(options);
         var host = options.BaseUrl.Host;
@@ -44,6 +45,8 @@ public static class PbsUpgrade
              .Append("&store=").Append(Uri.EscapeDataString(options.Datastore ?? throw new InvalidOperationException("datastore required")));
         if (!string.IsNullOrEmpty(options.Namespace))
             query.Append("&ns=").Append(Uri.EscapeDataString(options.Namespace));
+        if (benchmark)
+            query.Append("&benchmark=true");
 
         var handler = new SocketsHttpHandler
         {

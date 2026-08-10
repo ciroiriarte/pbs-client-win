@@ -22,6 +22,8 @@ try
             return 0;
         case "backup":
             return await BackupAsync(positionals, flags, multi);
+        case "benchmark":
+            return await Benchmark.RunAsync(flags);
         case "restore":
             return await RestoreAsync(positionals, flags, multi);
         case "snapshot" when positionals is ["list", ..]:
@@ -433,6 +435,7 @@ static void PrintUsage(string version)
     Console.WriteLine("Usage (verbs/flags mirror the upstream proxmox-backup-client where possible):");
     Console.WriteLine("  proxmox-backup-client backup <name.pxar>:<dir> [...] --repository <repo> [--ns <ns>] [--backup-id <id>] [--vss] [--no-incremental]");
     Console.WriteLine("  proxmox-backup-client backup <name.img>:<volume> --image --repository <repo> [--ns <ns>]   (Windows; whole-volume image via VSS)");
+    Console.WriteLine("  proxmox-backup-client benchmark [--repository <repo>] [--size <MiB>] [--output-format json]   (throughput diagnostics; network leg only with --repository)");
     Console.WriteLine("  proxmox-backup-client restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>] [--pattern <glob>]");
     Console.WriteLine("  proxmox-backup-client snapshot list --repository <repo> [--ns <ns>]");
     Console.WriteLine("  proxmox-backup-client snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");

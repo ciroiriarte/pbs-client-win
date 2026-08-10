@@ -41,11 +41,13 @@ public sealed class BackupSession : IAsyncDisposable
     /// <summary>Open a backup session, performing the protocol upgrade against the server.</summary>
     public static async Task<BackupSession> OpenAsync(
         PbsConnectionOptions options, string backupType, string backupId, long backupTimeUnix,
-        CancellationToken ct = default)
+        bool benchmark = false, CancellationToken ct = default)
     {
+        // benchmark=true opens the server's throughput-test mode: uploaded chunks are discarded and
+        // no snapshot is persisted (used by the `benchmark` command for the TLS leg).
         var http = await PbsUpgrade.ConnectAsync(
             options, "/api2/json/backup", ProtocolId, backupType, backupId, backupTimeUnix,
-            warmupPath: "previous_backup_time", ct);
+            warmupPath: benchmark ? null : "previous_backup_time", benchmark: benchmark, ct: ct);
         return new BackupSession(http, backupType, backupId, backupTimeUnix);
     }
 

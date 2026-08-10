@@ -28,7 +28,7 @@ public sealed class ReaderSession : IAsyncDisposable
         // the first real download surface any upgrade error.
         var http = await PbsUpgrade.ConnectAsync(
             options, "/api2/json/reader", ProtocolId, backupType, backupId, backupTimeUnix,
-            warmupPath: null, ct);
+            warmupPath: null, ct: ct);
         return new ReaderSession(http);
     }
 

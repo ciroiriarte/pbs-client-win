@@ -41,15 +41,17 @@ Done: `backup` (file/pxar, image/fidx, `--vss`, `--exclude`, incremental, encryp
 interoperable with the official client where applicable.
 
 Also done: **catalog** (`.pcat1` upload + `catalog dump`, byte-compatible — the official
-`proxmox-backup-client catalog dump` reads our catalog and vice versa) and **selective restore**
-(`restore --pattern <glob>`).
+`proxmox-backup-client catalog dump` reads our catalog and vice versa), **selective restore**
+(`restore --pattern <glob>`), and **benchmark** (local crypto/compression/hashing throughput plus a
+TLS upload leg with `--repository`, using the server's `benchmark=true` discard mode; `--output-format
+json`) — verified on Linux and the Windows build VM, and against a live PBS.
 
 Remaining vs the official client:
 - **catalog shell** (interactive browse) — the on-disk catalog is done; only the interactive REPL is missing.
 - **mount / map / unmap** — FUSE + block-device mechanisms are Linux-specific; the Windows equivalent
   (attach a restored image as a VHD, or a projected filesystem) is a separate design.
 - **advanced key mgmt** — `key change-passphrase`, master/RSA key escrow, `paperkey`.
-- **login/logout** (ticket + 2FA), **task** list/log/stop, **benchmark**, **change-owner** — lower value;
+- **login/logout** (ticket + 2FA), **task** list/log/stop, **change-owner** — lower value;
   API-token auth already covers the common case.
 
 ## Next
