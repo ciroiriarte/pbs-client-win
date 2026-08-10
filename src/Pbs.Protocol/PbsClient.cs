@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -38,17 +37,7 @@ public sealed class PbsClient : IDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        var handler = new SocketsHttpHandler
-        {
-            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-        };
-        if (options.Fingerprint is { } pinned)
-        {
-            handler.SslOptions.RemoteCertificateValidationCallback = (_, cert, _, errors) =>
-                cert is not null && pinned.Matches(cert);
-        }
-
-        var http = new HttpClient(handler)
+        var http = new HttpClient(PbsHttp.CreateHandler(options.Fingerprint))
         {
             BaseAddress = Normalize(options.BaseUrl),
             // Prefer HTTP/2 (required by the backup/reader session) but fall back to HTTP/1.1 for
@@ -56,8 +45,7 @@ public sealed class PbsClient : IDisposable
             DefaultRequestVersion = HttpVersion.Version20,
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
         };
-        http.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("PBSAPIToken", $"{options.Token.TokenId}:{options.Token.Secret}");
+        options.ApplyAuth(http.DefaultRequestHeaders);
 
         return new PbsClient(http, options, ownsHttp: true);
     }

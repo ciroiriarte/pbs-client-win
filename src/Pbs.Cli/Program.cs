@@ -25,6 +25,10 @@ try
             return await BackupAsync(positionals, flags, multi);
         case "benchmark":
             return await Benchmark.RunAsync(flags);
+        case "login":
+            return await LoginAsync(positionals, flags);
+        case "logout":
+            return Logout(positionals, flags);
         case "restore":
             return await RestoreAsync(positionals, flags, multi);
         case "snapshot" when positionals is ["list", ..]:
@@ -391,6 +395,43 @@ static int KeyCreate(string path, Dictionary<string, string> flags)
     return 0;
 }
 
+static async Task<int> LoginAsync(List<string> positionals, Dictionary<string, string> flags)
+{
+    var username = flags.GetValueOrDefault("username")
+                   ?? positionals.FirstOrDefault()
+                   ?? UsernameFromRepository(flags.GetValueOrDefault("repository") ?? Environment.GetEnvironmentVariable("PBS_REPOSITORY"))
+                   ?? throw new ArgumentException("login requires <user@realm> or --username");
+    var server = ResolveServer(flags);
+    var password = flags.GetValueOrDefault("password")
+                   ?? Environment.GetEnvironmentVariable("PBS_PASSWORD")
+                   ?? ReadSecret($"Password for {username}: ");
+    var fp = flags.GetValueOrDefault("fingerprint") ?? Environment.GetEnvironmentVariable("PBS_FINGERPRINT");
+    var baseUrl = BaseUrlFromServer(server);
+
+    var ticket = await PbsAuth.LoginAsync(
+        baseUrl,
+        string.IsNullOrEmpty(fp) ? null : CertificateFingerprint.Parse(fp),
+        username,
+        password,
+        prompt => ReadLineRequired(prompt + " "));
+
+    new TicketStore().Save(HostKey(baseUrl), ticket);
+    Console.WriteLine($"logged in as {ticket.Username} @ {HostKey(baseUrl)} (ticket cached, valid ~2h)");
+    return 0;
+}
+
+static int Logout(List<string> positionals, Dictionary<string, string> flags)
+{
+    var username = flags.GetValueOrDefault("username")
+                   ?? positionals.FirstOrDefault()
+                   ?? UsernameFromRepository(flags.GetValueOrDefault("repository") ?? Environment.GetEnvironmentVariable("PBS_REPOSITORY"))
+                   ?? throw new ArgumentException("logout requires <user@realm> or --username");
+    var baseUrl = BaseUrlFromServer(ResolveServer(flags));
+    new TicketStore().Delete(HostKey(baseUrl), username);
+    Console.WriteLine($"logged out {username} @ {HostKey(baseUrl)} (cached ticket deleted)");
+    return 0;
+}
+
 static async Task<int> StatusAsync(Dictionary<string, string> flags)
 {
     using var client = PbsClient.Create(ResolveConnection(flags));
@@ -414,12 +455,37 @@ static PbsConnectionOptions ResolveConnection(Dictionary<string, string> flags)
         ?? throw new ArgumentException("no repository (use --repository or PBS_REPOSITORY)");
     var repo = PbsRepository.Parse(repoSpec);
     if (repo.AuthId is null)
-        throw new ArgumentException("repository must include an API token id (user@realm!token@host:datastore)");
+        throw new ArgumentException("repository must include an auth id (user@realm!token@host:datastore or user@realm@host:datastore)");
+
+    var fp = flags.GetValueOrDefault("fingerprint") ?? Environment.GetEnvironmentVariable("PBS_FINGERPRINT");
+    var ns = flags.GetValueOrDefault("ns") ?? Environment.GetEnvironmentVariable("PBS_NAMESPACE");
+    var auth = flags.GetValueOrDefault("auth");
+    if (!string.IsNullOrEmpty(auth) &&
+        !string.Equals(auth, "token", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(auth, "ticket", StringComparison.OrdinalIgnoreCase))
+        throw new ArgumentException("--auth must be 'token' or 'ticket'");
+
+    var useTicket = string.Equals(auth, "ticket", StringComparison.OrdinalIgnoreCase) || !repo.AuthId.Contains('!');
+    if (useTicket)
+    {
+        var username = flags.GetValueOrDefault("username") ?? UserFromAuthId(repo.AuthId);
+        var host = HostKey(repo.BaseUrl);
+        var ticket = new TicketStore().TryLoad(host, username);
+        if (ticket is null || !ticket.IsLikelyValid)
+            throw new ArgumentException($"no valid cached ticket for {username} @ {host}; run `proxmox-backup-client login {username} --server {host}`");
+
+        return new PbsConnectionOptions
+        {
+            BaseUrl = repo.BaseUrl,
+            Ticket = ticket,
+            Fingerprint = string.IsNullOrEmpty(fp) ? null : CertificateFingerprint.Parse(fp),
+            Datastore = repo.Datastore,
+            Namespace = ns,
+        };
+    }
 
     var secret = flags.GetValueOrDefault("password") ?? Environment.GetEnvironmentVariable("PBS_PASSWORD")
         ?? throw new ArgumentException("no token secret (use --password or PBS_PASSWORD)");
-    var fp = flags.GetValueOrDefault("fingerprint") ?? Environment.GetEnvironmentVariable("PBS_FINGERPRINT");
-    var ns = flags.GetValueOrDefault("ns") ?? Environment.GetEnvironmentVariable("PBS_NAMESPACE");
 
     return new PbsConnectionOptions
     {
@@ -429,6 +495,92 @@ static PbsConnectionOptions ResolveConnection(Dictionary<string, string> flags)
         Datastore = repo.Datastore,
         Namespace = ns,
     };
+}
+
+static string ResolveServer(Dictionary<string, string> flags)
+{
+    var server = flags.GetValueOrDefault("server");
+    if (!string.IsNullOrWhiteSpace(server)) return server;
+
+    var repoSpec = flags.GetValueOrDefault("repository") ?? Environment.GetEnvironmentVariable("PBS_REPOSITORY");
+    if (!string.IsNullOrWhiteSpace(repoSpec)) return ServerFromRepository(repoSpec);
+
+    throw new ArgumentException("server required (use --server <host[:port]> or --repository <repo>)");
+}
+
+static Uri BaseUrlFromServer(string server)
+{
+    var hasExplicitPort = HasExplicitPort(server);
+    var value = server.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                server.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+        ? server
+        : $"https://{server}";
+    var uri = new Uri(value);
+    var b = new UriBuilder(uri);
+    if (!hasExplicitPort) b.Port = PbsRepository.DefaultPort;
+    if (!b.Path.EndsWith('/')) b.Path += "/";
+    return b.Uri;
+}
+
+static bool HasExplicitPort(string server)
+{
+    var value = server;
+    if (Uri.TryCreate(server, UriKind.Absolute, out var uri))
+        value = uri.Authority;
+    var bracket = value.LastIndexOf(']');
+    if (bracket >= 0) return bracket + 1 < value.Length && value[bracket + 1] == ':';
+    return value.LastIndexOf(':') > value.LastIndexOf('@');
+}
+
+static string ServerFromRepository(string repoSpec)
+{
+    var repo = PbsRepository.Parse(repoSpec);
+    return repo.Port == PbsRepository.DefaultPort ? repo.Host : $"{repo.Host}:{repo.Port}";
+}
+
+static string? UsernameFromRepository(string? repoSpec)
+{
+    if (string.IsNullOrWhiteSpace(repoSpec)) return null;
+    var repo = PbsRepository.Parse(repoSpec);
+    return repo.AuthId is null ? null : UserFromAuthId(repo.AuthId);
+}
+
+static string UserFromAuthId(string authId)
+{
+    var bang = authId.IndexOf('!');
+    return bang < 0 ? authId : authId[..bang];
+}
+
+static string HostKey(Uri baseUrl) => baseUrl.IsDefaultPort ? baseUrl.Host : $"{baseUrl.Host}:{baseUrl.Port}";
+
+static string ReadLineRequired(string prompt)
+{
+    Console.Write(prompt);
+    return Console.ReadLine() ?? throw new InvalidOperationException("input required");
+}
+
+static string ReadSecret(string prompt)
+{
+    Console.Write(prompt);
+    if (Console.IsInputRedirected)
+        return Console.ReadLine() ?? string.Empty;
+
+    var chars = new List<char>();
+    while (true)
+    {
+        var key = Console.ReadKey(intercept: true);
+        if (key.Key == ConsoleKey.Enter)
+        {
+            Console.WriteLine();
+            return new string(chars.ToArray());
+        }
+        if (key.Key == ConsoleKey.Backspace)
+        {
+            if (chars.Count > 0) chars.RemoveAt(chars.Count - 1);
+            continue;
+        }
+        if (!char.IsControl(key.KeyChar)) chars.Add(key.KeyChar);
+    }
 }
 
 static ISnapshotSource CreateSnapshotSource(bool useVss, IReadOnlyCollection<string> volumes)
@@ -509,6 +661,8 @@ static void PrintUsage(string version)
     Console.WriteLine("  proxmox-backup-client backup <name.pxar>:<dir> [...] --repository <repo> [--ns <ns>] [--backup-id <id>] [--vss] [--no-incremental]");
     Console.WriteLine("  proxmox-backup-client backup <name.img>:<volume> --image --repository <repo> [--ns <ns>]   (Windows; whole-volume image via VSS)");
     Console.WriteLine("  proxmox-backup-client benchmark [--repository <repo>] [--size <MiB>] [--output-format json]   (throughput diagnostics; network leg only with --repository)");
+    Console.WriteLine("  proxmox-backup-client login <user@realm> --server <host[:port]> [--fingerprint <fp>]");
+    Console.WriteLine("  proxmox-backup-client logout <user@realm> --server <host[:port]>");
     Console.WriteLine("  proxmox-backup-client restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>] [--pattern <glob>]");
     Console.WriteLine("  proxmox-backup-client snapshot list --repository <repo> [--ns <ns>]");
     Console.WriteLine("  proxmox-backup-client snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");
@@ -527,8 +681,8 @@ static void PrintUsage(string version)
     Console.WriteLine("backup file mode also accepts repeatable --exclude <glob> (e.g. --exclude *.tmp --exclude /logs/**).");
     Console.WriteLine("snapshot list accepts --output-format json.");
     Console.WriteLine();
-    Console.WriteLine("Repository: [AUTHID@]HOST[:PORT]:DATASTORE  (e.g. root@pam!tok@pbs.example:store01)");
-    Console.WriteLine("Credentials: --password/PBS_PASSWORD (token secret), --fingerprint/PBS_FINGERPRINT.");
+    Console.WriteLine("Repository: [AUTHID@]HOST[:PORT]:DATASTORE  (e.g. root@pam!tok@pbs.example:store01 or root@pam@pbs.example:store01 for ticket auth)");
+    Console.WriteLine("Credentials: --password/PBS_PASSWORD (token secret or login password), --auth token|ticket, --fingerprint/PBS_FINGERPRINT.");
     Console.WriteLine("Encryption: --keyfile/PBS_KEYFILE (a 'key create --kdf none' keyfile); AES-256-GCM,");
     Console.WriteLine("            interoperable with the official client's --keyfile.");
     Console.WriteLine();

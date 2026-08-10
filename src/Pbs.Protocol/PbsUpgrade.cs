@@ -90,14 +90,16 @@ public static class PbsUpgrade
             ApplicationProtocols = new List<SslApplicationProtocol> { SslApplicationProtocol.Http11 },
         }, ct);
 
-        var request =
-            $"GET {path} HTTP/1.1\r\n" +
-            $"Host: {host}:{port}\r\n" +
-            $"Authorization: PBSAPIToken {options.Token.TokenId}:{options.Token.Secret}\r\n" +
-            "Connection: upgrade\r\n" +
-            $"Upgrade: {protocolId}\r\n" +
-            "\r\n";
-        await ssl.WriteAsync(Encoding.ASCII.GetBytes(request), ct);
+        var request = new StringBuilder()
+            .Append($"GET {path} HTTP/1.1\r\n")
+            .Append($"Host: {host}:{port}\r\n");
+        foreach (var header in options.AuthHeaderLines())
+            request.Append(header);
+        request
+            .Append("Connection: upgrade\r\n")
+            .Append($"Upgrade: {protocolId}\r\n")
+            .Append("\r\n");
+        await ssl.WriteAsync(Encoding.ASCII.GetBytes(request.ToString()), ct);
         await ssl.FlushAsync(ct);
 
         var statusLine = await ReadLineAsync(ssl, ct);

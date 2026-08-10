@@ -51,10 +51,13 @@ Remaining vs the official client:
 - **mount / map / unmap** — FUSE + block-device mechanisms are Linux-specific; the Windows equivalent
   (attach a restored image as a VHD, or a projected filesystem) is a separate design.
 - **advanced key mgmt** — `key change-passphrase`, master/RSA key escrow, `paperkey`.
-- **login/logout** (ticket + 2FA) — lower value; API-token auth already covers the common case.
 
-Also done: **change-owner** (POST `change-owner` with backup-type/backup-id/new-owner) and **task**
-`list`/`log`/`stop` (`/nodes/{node}/tasks`, node defaults to `localhost`) — verified against a live PBS.
+Also done: **change-owner** (POST `change-owner` with backup-type/backup-id/new-owner), **task**
+`list`/`log`/`stop` (`/nodes/{node}/tasks`, node defaults to `localhost`), and **login/logout**
+(ticket + CSRF cookie auth via `/access/ticket`, with TOTP/recovery **2FA**; ticket cached per
+host+user, used for both the JSON API and the backup/reader upgrade). API-token auth remains the
+recommended path for unattended backups. All verified against a live PBS — the 2FA path with a real
+TOTP-enrolled user.
 
 ## Next
 
