@@ -38,6 +38,8 @@ try
             return await MapAsync(positionals, flags);
         case "mount":
             return await MountAsync(positionals, flags);
+        case "unmount" or "umount":
+            return Unmount(positionals);
         case "unmap":
             return await UnmapAsync(positionals, flags);
         case "snapshot" when positionals is ["list", ..]:
@@ -369,8 +371,15 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
         using var session = new Pbs.ProjFs.PxarMountSession(root, archiveCatalog, tempStream, index);
         session.Start();
 
+        // Named stop event so a detached mount can be torn down cleanly via `unmount <dir>`.
+        using var stopEvent = new EventWaitHandle(false, EventResetMode.ManualReset, MountStopEventName(root));
+        // RegisteredWaitHandle is not IDisposable; unregister it explicitly before the
+        // stop event is disposed.
+        var stopReg = ThreadPool.RegisterWaitForSingleObject(
+            stopEvent, (_, _) => cts.Cancel(), null, Timeout.Infinite, executeOnlyOnce: true);
+
         Console.WriteLine($"mounted {stored} at {root} read-only ({restored} bytes hydrated)");
-        Console.WriteLine("Press Ctrl-C to unmount.");
+        Console.WriteLine($"Press Ctrl-C or run 'proxmox-backup-client unmount {mountRoot}' to unmount.");
 
         try
         {
@@ -380,6 +389,7 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
         {
         }
 
+        stopReg.Unregister(null);
         return 0;
     }
     finally
@@ -392,6 +402,36 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
     Console.Error.WriteLine("mount is Windows-only because it uses Windows Projected File System (ProjFS).");
     return await Task.FromResult(1);
 #endif
+}
+
+// Signal a running (possibly detached) ProjFS mount to unmount cleanly.
+static int Unmount(List<string> positionals)
+{
+    if (positionals.Count != 1) { Console.Error.WriteLine("unmount: expected <dir>"); return 1; }
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.Error.WriteLine("unmount is Windows-only (ProjFS).");
+        return 1;
+    }
+
+    var root = Path.GetFullPath(positionals[0]);
+    if (EventWaitHandle.TryOpenExisting(MountStopEventName(root), out var stopEvent))
+    {
+        using (stopEvent) stopEvent.Set();
+        Console.WriteLine($"unmount signaled for {root}");
+        return 0;
+    }
+
+    Console.Error.WriteLine($"no active mount found at {root}");
+    return 1;
+}
+
+// Stable per-mount-root name shared between `mount` and `unmount` (same session).
+static string MountStopEventName(string root)
+{
+    var full = Path.GetFullPath(root).ToLowerInvariant();
+    var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(full)));
+    return $"pbs-projfs-{hash[..32]}";
 }
 
 static async Task<int> UnmapAsync(List<string> positionals, Dictionary<string, string> flags)
@@ -979,6 +1019,7 @@ static void PrintUsage(string version)
     Console.WriteLine("  proxmox-backup-client restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>] [--pattern <glob>]");
     Console.WriteLine("  proxmox-backup-client map <type/id/time> <name.img> --repository <repo> [--ns <ns>] [--bind 127.0.0.1] [--port 10809] [--export-name <name>] [--device <instance>] [--wnbd-client-path <path>]");
     Console.WriteLine("  proxmox-backup-client mount <type/id/time> <name.pxar> <dir> --repository <repo> [--ns <ns>]   (Windows; read-only ProjFS browse)");
+    Console.WriteLine("  proxmox-backup-client unmount <dir>   (Windows; stop a ProjFS mount)");
     Console.WriteLine("  proxmox-backup-client unmap <instance> [--wnbd-client-path <path>]");
     Console.WriteLine("  proxmox-backup-client snapshot list --repository <repo> [--ns <ns>]");
     Console.WriteLine("  proxmox-backup-client snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");
