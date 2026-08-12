@@ -25,6 +25,13 @@ public sealed class PxarMountSession : IDisposable
     private readonly VirtualizationInstance _instance;
 
     private bool _started;
+    private volatile bool _stopping;
+
+    /// <summary>
+    /// Enter teardown: subsequent deletes are permitted so the owning process can clear its
+    /// hydrated placeholders while the provider is still running, then call <see cref="Dispose"/>.
+    /// </summary>
+    public void PrepareForTeardown() => _stopping = true;
 
     public PxarMountSession(
         string virtualizationRootPath,
@@ -54,7 +61,10 @@ public sealed class PxarMountSession : IDisposable
 
         _instance = new VirtualizationInstance(_root, 0, 0, enableNegativePathCache: false, notifications);
         _instance.OnQueryFileName = QueryFileName;
-        _instance.OnNotifyPreDelete = (_, _, _, _) => false;
+        // Deny deletes while serving (read-only), but allow them during teardown so the owning
+        // process can clear its hydrated placeholders BEFORE StopVirtualizing (placeholders are not
+        // deletable once the provider has stopped — ERROR_ACCESS_DENIED).
+        _instance.OnNotifyPreDelete = (_, _, _, _) => _stopping;
         _instance.OnNotifyPreRename = (_, _, _, _) => false;
         _instance.OnNotifyPreCreateHardlink = (_, _, _, _) => false;
         _instance.OnNotifyFilePreConvertToFull = (_, _, _) => false;

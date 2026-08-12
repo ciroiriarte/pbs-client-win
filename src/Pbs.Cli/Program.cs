@@ -348,6 +348,8 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
     using var sigterm = System.Runtime.InteropServices.PosixSignalRegistration.Create(
         System.Runtime.InteropServices.PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; cts.Cancel(); });
 
+    Pbs.ProjFs.PxarMountSession? session = null;
+
     try
     {
         PrepareMountRoot(root);
@@ -369,7 +371,7 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
         using var pxarStream = reader.OpenArchiveStream(stored, archiveSize, crypt);
         var index = await PxarIndexer.BuildIndexAsync(pxarStream, cts.Token);
 
-        using var session = new Pbs.ProjFs.PxarMountSession(root, archiveCatalog, pxarStream, index);
+        session = new Pbs.ProjFs.PxarMountSession(root, archiveCatalog, pxarStream, index);
         session.Start();
 
         // Named stop event so a detached mount can be torn down cleanly via `unmount <dir>`.
@@ -396,6 +398,15 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
     finally
     {
         Console.CancelKeyPress -= cancelHandler;
+        if (session is not null)
+        {
+            // Clear hydrated placeholders while the provider is still running (it permits deletes
+            // during teardown), THEN StopVirtualizing — placeholders can't be deleted once it stops.
+            session.PrepareForTeardown();
+            TryClearMountRoot(root);
+            session.Dispose();
+        }
+        TryRemoveMountRoot(root);
     }
 #else
     _ = flags;
@@ -403,6 +414,85 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
     return await Task.FromResult(1);
 #endif
 }
+
+#if WINDOWS
+// Delete the placeholders inside the virtualization root while the provider is still running (it
+// permits deletes during teardown). Placeholders carry the ReadOnly attribute (read-only mount), so
+// each must be un-read-only'd before File.Delete, and they can't be removed once StopVirtualizing has run.
+static void TryClearMountRoot(string root)
+{
+    for (var attempt = 0; ; attempt++)
+    {
+        try
+        {
+            if (Directory.Exists(root))
+                DeleteDirectoryContents(root);
+            return;
+        }
+        catch (Exception) when (attempt < 25)
+        {
+            Thread.Sleep(200);
+        }
+        catch
+        {
+            return; // best-effort; TryRemoveMountRoot still tries to remove what's left
+        }
+    }
+}
+
+static void DeleteDirectoryContents(string dir)
+{
+    foreach (var file in Directory.EnumerateFiles(dir))
+    {
+        TryClearReadOnly(file);
+        File.Delete(file);
+    }
+    foreach (var sub in Directory.EnumerateDirectories(dir))
+    {
+        DeleteDirectoryContents(sub);
+        TryClearReadOnly(sub);
+        Directory.Delete(sub);
+    }
+}
+
+static void TryClearReadOnly(string path)
+{
+    try
+    {
+        var attrs = File.GetAttributes(path);
+        if ((attrs & FileAttributes.ReadOnly) != 0)
+            File.SetAttributes(path, attrs & ~FileAttributes.ReadOnly);
+    }
+    catch { /* best-effort */ }
+}
+
+// Remove the (now-empty) virtualization root after StopVirtualizing, retrying the transient
+// ProjFS filter failure for a bounded window before giving up.
+static void TryRemoveMountRoot(string root)
+{
+    for (var attempt = 0; ; attempt++)
+    {
+        try
+        {
+            if (Directory.Exists(root))
+            {
+                TryClearReadOnly(root);
+                Directory.Delete(root, recursive: true);
+            }
+            return;
+        }
+        catch (Exception) when (attempt < 25)
+        {
+            Thread.Sleep(200);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"warning: could not remove mount root {root}: {ex.Message} (remove it manually, or after a reboot)");
+            return;
+        }
+    }
+}
+#endif
 
 // Signal a running (possibly detached) ProjFS mount to unmount cleanly.
 static int Unmount(List<string> positionals)
