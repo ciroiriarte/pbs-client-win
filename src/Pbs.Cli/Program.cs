@@ -283,8 +283,12 @@ static async Task<int> MapAsync(List<string> positionals, Dictionary<string, str
             }
             else if (wnbdClient is null)
             {
-                Console.WriteLine("wnbd-client was not found (checked --wnbd-client-path, PATH, C:\\wnbd, and the Ceph install dir); server will keep serving.");
-                Console.WriteLine($"Run manually: wnbd-client map {device} {endpoint.Address} --port {endpoint.Port} --export-name {exportName}");
+                // stdout (not an error): the NBD server still runs, so the user can attach
+                // manually once WNBD is installed. `unmap` prints the same guidance to stderr
+                // with a failing exit code because it genuinely cannot proceed.
+                Console.WriteLine(WnbdSupport.NotFoundGuidance);
+                Console.WriteLine("The NBD server will keep serving; once WNBD is installed, attach with:");
+                Console.WriteLine($"  wnbd-client map {device} {endpoint.Address} --port {endpoint.Port} --export-name {exportName}");
             }
             else
             {
@@ -438,7 +442,7 @@ static async Task<int> UnmapAsync(List<string> positionals, Dictionary<string, s
     var wnbdClient = ResolveWnbdClient(flags);
     if (wnbdClient is null)
     {
-        Console.Error.WriteLine("unmap: wnbd-client not found (checked --wnbd-client-path, PATH, C:\\wnbd, and the Ceph install dir).");
+        Console.Error.WriteLine(WnbdSupport.NotFoundGuidance);
         return 1;
     }
     return await RunProcessAsync(wnbdClient, $"unmap {QuoteArg(positionals[0])}", CancellationToken.None);

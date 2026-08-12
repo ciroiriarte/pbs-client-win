@@ -69,7 +69,19 @@ proxmox-backup-client restore host/my-host/1700000000 disk0.img /restore/disk0.i
 #   proxmox-backup-client key create --kdf none key.json
 proxmox-backup-client backup root.pxar:/path --ns ns --keyfile key.json
 proxmox-backup-client restore host/my-host/1700000000 root.pxar /target --ns ns --keyfile key.json
+
+# Windows, browse a file archive read-only via ProjFS (no full restore):
+proxmox-backup-client mount host/my-host/1700000000 root.pxar C:\mnt\backup --ns my-namespace
+proxmox-backup-client unmount C:\mnt\backup
+
+# Windows, expose a restored image as a block device via WNBD (third-party driver):
+proxmox-backup-client map host/my-host/1700000000 disk0.img --device pbs-disk0 --ns my-namespace
+proxmox-backup-client unmap pbs-disk0
 ```
+
+> `map` / `unmap` require the third-party **WNBD** driver (Cloudbase, LGPL-2.1). It
+> is detected, not bundled — install it and see licensing details in
+> [docs/WNBD.md](docs/WNBD.md).
 
 ## Architecture (summary)
 
