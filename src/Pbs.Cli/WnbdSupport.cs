@@ -23,4 +23,28 @@ public static class WnbdSupport
         "  (Checked --wnbd-client-path, PATH, C:\\wnbd, and the Ceph install dir.)\n" +
         "  Already installed elsewhere? Point at it with:  --wnbd-client-path <path-to-wnbd-client.exe>\n" +
         "  Install and licensing details: docs/WNBD.md";
+
+    /// <summary>Where to get the Visual C++ 2015–2022 x64 redistributable that WNBD needs.</summary>
+    public const string VcRedistUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe";
+
+    /// <summary>
+    /// Exit code a process returns when it cannot start because a dependent DLL is missing:
+    /// <c>STATUS_DLL_NOT_FOUND</c> = 0xC0000135 = -1073741515. WNBD's <c>wnbd-client.exe</c> /
+    /// <c>libwnbd.dll</c> exit with this when the VC++ runtime is absent.
+    /// </summary>
+    public const int MissingRuntimeExitCode = -1073741515;
+
+    /// <summary>True when a wnbd-client exit code indicates a missing dependent DLL (VC++ runtime).</summary>
+    public static bool IsMissingRuntime(int exitCode) => exitCode == MissingRuntimeExitCode;
+
+    /// <summary>
+    /// Guidance shown when <c>wnbd-client</c> fails to start with 0xC0000135 — its
+    /// <c>libwnbd.dll</c> needs the Visual C++ 2015–2022 x64 redistributable. We do not
+    /// bundle it (WNBD is detect-and-require, not shipped by us), so we point the user at it.
+    /// </summary>
+    public static string MissingRuntimeGuidance =>
+        "wnbd-client failed to start (exit 0xC0000135 — a required DLL is missing).\n" +
+        "  WNBD's libwnbd.dll needs the Visual C++ 2015–2022 x64 redistributable.\n" +
+        $"  Install it as Administrator: {VcRedistUrl}\n" +
+        "  Then retry. Details: docs/WNBD.md";
 }

@@ -294,7 +294,10 @@ static async Task<int> MapAsync(List<string> positionals, Dictionary<string, str
             {
                 var exit = await RunProcessAsync(wnbdClient, $"map {QuoteArg(device)} {endpoint.Address} --port {endpoint.Port} --export-name {QuoteArg(exportName)}", cts.Token);
                 if (exit != 0)
+                {
+                    ReportMissingRuntime(exit);
                     return exit;
+                }
                 mappedDevice = device;
                 Console.WriteLine($"mapped {device} via {wnbdClient}");
             }
@@ -445,7 +448,17 @@ static async Task<int> UnmapAsync(List<string> positionals, Dictionary<string, s
         Console.Error.WriteLine(WnbdSupport.NotFoundGuidance);
         return 1;
     }
-    return await RunProcessAsync(wnbdClient, $"unmap {QuoteArg(positionals[0])}", CancellationToken.None);
+    var exit = await RunProcessAsync(wnbdClient, $"unmap {QuoteArg(positionals[0])}", CancellationToken.None);
+    ReportMissingRuntime(exit);
+    return exit;
+}
+
+// If wnbd-client failed to start because a dependent DLL is missing (0xC0000135),
+// point the user at the VC++ x64 redistributable that libwnbd.dll needs.
+static void ReportMissingRuntime(int exitCode)
+{
+    if (WnbdSupport.IsMissingRuntime(exitCode))
+        Console.Error.WriteLine(WnbdSupport.MissingRuntimeGuidance);
 }
 
 // Locate wnbd-client.exe: explicit --wnbd-client-path, then PATH, then common

@@ -29,7 +29,12 @@ WNBD ships inside the **Ceph for Windows** package, which bundles the driver +
 2. Install **as Administrator** (installing a kernel driver requires elevation;
    `map --device` / `unmap` also need Administrator and the driver loaded).
 3. Ensure the **Visual C++ 2015–2022 x64 redistributable** is present —
-   `libwnbd.dll` depends on it (`vc_redist.x64.exe`; see issue #26).
+   `libwnbd.dll` depends on it. If it's missing, `wnbd-client` fails to start with
+   `0xC0000135` (STATUS_DLL_NOT_FOUND). Install
+   [`vc_redist.x64.exe`](https://aka.ms/vs/17/release/vc_redist.x64.exe) as
+   Administrator. Because WNBD is detected, not bundled (see below), this client
+   does not ship the redistributable — instead `map`/`unmap` recognize the
+   `0xC0000135` failure and print this same guidance.
 4. Verify: `wnbd-client.exe -v` and `wnbd-client.exe list` should run without error.
 
 Already have `wnbd-client.exe` somewhere non-standard? Point the client at it with
@@ -60,4 +65,7 @@ If a future installer bundles WNBD (tracked in #13/#23), it must:
 - provide a **written offer for the corresponding source**, valid for at least
   three years (LGPL-2.1 §6(c)). The maintained WNBD source is at
   **https://github.com/ciroiriarte/wnbd** and the build/sign tooling at the
-  **`wnbd-dist`** repo.
+  **`wnbd-dist`** repo, and
+- revisit chain-installing the **VC++ x64 redistributable** (#26): once we ship
+  `libwnbd.dll` ourselves, its runtime becomes our responsibility rather than the
+  user's.
