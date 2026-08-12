@@ -332,6 +332,13 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
         cts.Cancel();
     };
     Console.CancelKeyPress += cancelHandler;
+    // Console.CancelKeyPress only fires with an attached console; a detached mount
+    // process (Start-Process with redirected output) is stopped via signals, so also
+    // catch SIGINT/SIGTERM to run a clean StopVirtualizing + teardown.
+    using var sigint = System.Runtime.InteropServices.PosixSignalRegistration.Create(
+        System.Runtime.InteropServices.PosixSignal.SIGINT, ctx => { ctx.Cancel = true; cts.Cancel(); });
+    using var sigterm = System.Runtime.InteropServices.PosixSignalRegistration.Create(
+        System.Runtime.InteropServices.PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; cts.Cancel(); });
 
     try
     {
@@ -342,6 +349,10 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
         using var catalogBuffer = new MemoryStream();
         await reader.RestoreDynamicArchiveAsync("catalog.pcat1.didx", catalogBuffer, crypt, cts.Token);
         var catalog = PxarCatalog.Parse(catalogBuffer.ToArray());
+        // The catalog root lists archives as children (e.g. "<name>.pxar.didx"); the mount
+        // root should expose the selected archive's contents, not the archive list.
+        var archiveCatalog = catalog.Children.FirstOrDefault(c => string.Equals(c.Name, stored, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidDataException($"catalog does not contain archive root '{stored}'");
 
         await using var tempStream = new FileStream(
             tempPath,
@@ -355,7 +366,7 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
         tempStream.Position = 0;
         var index = await PxarIndexer.BuildIndexAsync(tempStream, cts.Token);
 
-        using var session = new Pbs.ProjFs.PxarMountSession(root, catalog, tempStream, index);
+        using var session = new Pbs.ProjFs.PxarMountSession(root, archiveCatalog, tempStream, index);
         session.Start();
 
         Console.WriteLine($"mounted {stored} at {root} read-only ({restored} bytes hydrated)");

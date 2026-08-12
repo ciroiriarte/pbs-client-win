@@ -134,8 +134,11 @@ public sealed class PxarMountSession : IDisposable
             return HResult.FileNotFound;
 
         var time = ToDateTime(entry.MtimeSecs);
+        // ProjFS requires the native (backslash) relative path here; NormalizePath's
+        // forward slashes are only for our internal lookup keys. Passing a '/'-containing
+        // path makes WritePlaceholderInfo produce ERROR_INVALID_NAME for nested entries.
         return _instance.WritePlaceholderInfo(
-            NormalizePath(relativePath),
+            relativePath,
             time,
             time,
             time,
