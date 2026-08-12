@@ -325,7 +325,6 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
     var crypt = LoadCrypt(flags)?.Config;
     var stored = StoredArchiveName(archive);
     var root = Path.GetFullPath(mountRoot);
-    var tempPath = Path.Combine(Path.GetTempPath(), $"pbs-projfs-{Guid.NewGuid():N}.pxar");
 
     using var cts = new CancellationTokenSource();
     ConsoleCancelEventHandler? cancelHandler = (_, e) =>
@@ -356,19 +355,14 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
         var archiveCatalog = catalog.Children.FirstOrDefault(c => string.Equals(c.Name, stored, StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidDataException($"catalog does not contain archive root '{stored}'");
 
-        await using var tempStream = new FileStream(
-            tempPath,
-            FileMode.CreateNew,
-            FileAccess.ReadWrite,
-            FileShare.Read,
-            bufferSize: 1024 * 1024,
-            FileOptions.SequentialScan);
+        // M2: serve on demand. Instead of restoring the whole pxar to a temp file, open a
+        // seekable ranged-read stream — PxarIndexer reads only the header regions (skipping
+        // payloads via Seek) and ProjFS GetFileData fetches only the bytes each file needs.
+        var archiveSize = await reader.GetArchiveSizeAsync(stored, crypt, cts.Token);
+        using var pxarStream = reader.OpenArchiveStream(stored, archiveSize, crypt);
+        var index = await PxarIndexer.BuildIndexAsync(pxarStream, cts.Token);
 
-        var restored = await reader.RestoreDynamicArchiveAsync(stored, tempStream, crypt, cts.Token);
-        tempStream.Position = 0;
-        var index = await PxarIndexer.BuildIndexAsync(tempStream, cts.Token);
-
-        using var session = new Pbs.ProjFs.PxarMountSession(root, archiveCatalog, tempStream, index);
+        using var session = new Pbs.ProjFs.PxarMountSession(root, archiveCatalog, pxarStream, index);
         session.Start();
 
         // Named stop event so a detached mount can be torn down cleanly via `unmount <dir>`.
@@ -378,7 +372,7 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
         var stopReg = ThreadPool.RegisterWaitForSingleObject(
             stopEvent, (_, _) => cts.Cancel(), null, Timeout.Infinite, executeOnlyOnce: true);
 
-        Console.WriteLine($"mounted {stored} at {root} read-only ({restored} bytes hydrated)");
+        Console.WriteLine($"mounted {stored} at {root} read-only ({archiveSize} bytes, on-demand)");
         Console.WriteLine($"Press Ctrl-C or run 'proxmox-backup-client unmount {mountRoot}' to unmount.");
 
         try
@@ -395,7 +389,6 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
     finally
     {
         Console.CancelKeyPress -= cancelHandler;
-        try { File.Delete(tempPath); } catch { }
     }
 #else
     _ = flags;

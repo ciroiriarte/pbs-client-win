@@ -5,9 +5,10 @@ using Pbs.Pxar;
 namespace Pbs.ProjFs;
 
 /// <summary>
-/// Read-only ProjFS provider for a pxar archive. Milestone 1 serves content from a seekable,
-/// hydrated pxar temp stream using <see cref="PxarEntryLocation"/> payload offsets; Milestone 2 can
-/// replace the stream with a ReaderSession-backed ranged reader behind the same path lookup.
+/// Read-only ProjFS provider for a pxar archive. Serves content from any seekable pxar stream using
+/// <see cref="PxarEntryLocation"/> payload offsets. The stream is supplied by the caller: M2 passes a
+/// ReaderSession-backed ranged-read stream (on-demand, no full restore); the same code also works with
+/// a locally-hydrated stream. Reads are serialized on the stream via an internal lock.
 /// </summary>
 public sealed class PxarMountSession : IDisposable
 {
