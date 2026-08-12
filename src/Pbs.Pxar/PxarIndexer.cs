@@ -8,6 +8,8 @@ public enum PxarEntryKind
     Directory,
     File,
     Symlink,
+    /// <summary>Device, FIFO, socket, or hardlink — present in the tree but with no local payload.</summary>
+    Special,
 }
 
 public sealed record PxarEntryLocation(
@@ -19,13 +21,20 @@ public sealed record PxarEntryLocation(
     ulong MtimeSecs);
 
 /// <summary>
-/// Builds a seek-friendly index over a pxar stream without reading file payload bytes.
+/// Builds a seek-friendly index over a pxar archive without reading file payload bytes.
+/// Interoperable with archives produced by the official proxmox-backup-client: after each ENTRY it
+/// skips any non-structural record (XATTR / ACL / FCAPS / QUOTA / future/unknown records) before the
+/// real content, and dispatches on the stat mode so directories, files, symlinks, and special files
+/// (device / FIFO / socket / hardlink) are all handled.
 /// </summary>
 public sealed class PxarIndexer
 {
+    private const int HeaderSize = PxarFormat.HeaderSize;
+
     private const ulong ModeFmt = 0xF000;
-    private const ulong ModeDir = 0x4000;
-    private const ulong ModeLnk = 0xA000;
+    private const ulong ModeDir = 0x4000;   // S_IFDIR
+    private const ulong ModeReg = 0x8000;   // S_IFREG
+    private const ulong ModeLnk = 0xA000;   // S_IFLNK
 
     private readonly Stream _in;
     private readonly List<PxarEntryLocation> _entries = new();
@@ -43,25 +52,27 @@ public sealed class PxarIndexer
         pxar.Position = 0;
         var indexer = new PxarIndexer(pxar);
 
-        var (htype, size) = await indexer.ReadHeaderAsync(ct);
-        if (htype == PxarFormat.FormatVersion)
+        // Skip any leading non-ENTRY records (FORMAT_VERSION, PRELUDE, or future additions) until the
+        // root ENTRY. The official client may emit records our writer does not.
+        ulong htype;
+        long size;
+        while (true)
         {
-            await indexer.SkipAsync(size - PxarFormat.HeaderSize, ct);
             (htype, size) = await indexer.ReadHeaderAsync(ct);
+            if (htype == PxarFormat.Entry)
+                break;
+            await indexer.SkipAsync(size - HeaderSize, ct);
         }
-
-        if (htype != PxarFormat.Entry)
-            throw new InvalidDataException($"pxar: expected root ENTRY, got htype {htype:x16}");
 
         var rootStat = await indexer.ReadStatAsync(size, ct);
         if ((rootStat.Mode & ModeFmt) != ModeDir)
             throw new InvalidDataException("pxar: root ENTRY is not a directory");
 
-        indexer._entries.Add(new PxarEntryLocation(string.Empty, PxarEntryKind.Directory, 0, 0, (uint)rootStat.Mode, rootStat.MtimeSecs));
-        await indexer.ScanDirBodyAsync(string.Empty, ct);
+        await indexer.ScanEntryBodyAsync(string.Empty, rootStat, ct);
         return indexer._entries;
     }
 
+    // A directory body is (FILENAME + ENTRY-body)* terminated by GOODBYE.
     private async Task ScanDirBodyAsync(string relativePrefix, CancellationToken ct)
     {
         while (true)
@@ -69,11 +80,15 @@ public sealed class PxarIndexer
             var (htype, size) = await ReadHeaderAsync(ct);
             if (htype == PxarFormat.Goodbye)
             {
-                await SkipAsync(size - PxarFormat.HeaderSize, ct);
+                await SkipAsync(size - HeaderSize, ct);
                 return;
             }
             if (htype != PxarFormat.Filename)
-                throw new InvalidDataException($"pxar: expected FILENAME, got htype {htype:x16}");
+            {
+                // Defensive forward-compat: skip anything unexpected between children.
+                await SkipAsync(size - HeaderSize, ct);
+                continue;
+            }
 
             var name = await ReadNameAsync(size, ct);
             var relPath = relativePrefix.Length == 0 ? name : $"{relativePrefix}/{name}";
@@ -83,56 +98,107 @@ public sealed class PxarIndexer
                 throw new InvalidDataException($"pxar: expected ENTRY after FILENAME, got htype {entryType:x16}");
 
             var stat = await ReadStatAsync(entrySize, ct);
-            var modeType = stat.Mode & ModeFmt;
-            if (modeType == ModeDir)
-            {
-                _entries.Add(new PxarEntryLocation(relPath, PxarEntryKind.Directory, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
-                await ScanDirBodyAsync(relPath, ct);
-            }
-            else if (modeType == ModeLnk)
-            {
-                var (linkType, linkSize) = await ReadHeaderAsync(ct);
-                if (linkType != PxarFormat.Symlink)
-                    throw new InvalidDataException($"pxar: expected SYMLINK, got htype {linkType:x16}");
+            await ScanEntryBodyAsync(relPath, stat, ct);
+        }
+    }
 
-                await ReadStringAsync(linkSize, ct);
-                _entries.Add(new PxarEntryLocation(relPath, PxarEntryKind.Symlink, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
-            }
-            else
-            {
-                var (payloadType, payloadSize) = await ReadHeaderAsync(ct);
-                if (payloadType != PxarFormat.Payload)
-                    throw new InvalidDataException($"pxar: expected PAYLOAD, got htype {payloadType:x16}");
+    // After an ENTRY's stat has been read: consume this entry's metadata records, then its content
+    // (dir body, PAYLOAD, SYMLINK, …) based on the stat mode. Records the entry's location.
+    private async Task ScanEntryBodyAsync(string relPath, EntryStat stat, CancellationToken ct)
+    {
+        var modeType = stat.Mode & ModeFmt;
 
-                var payloadLength = payloadSize - PxarFormat.HeaderSize;
-                var payloadOffset = _in.Position;
-                _entries.Add(new PxarEntryLocation(relPath, PxarEntryKind.File, payloadOffset, payloadLength, (uint)stat.Mode, stat.MtimeSecs));
-                await SkipAsync(payloadLength, ct);
+        if (modeType == ModeDir)
+        {
+            _entries.Add(new PxarEntryLocation(relPath, PxarEntryKind.Directory, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
+            // Skip the directory's own metadata records; the body starts at the first FILENAME/GOODBYE.
+            while (true)
+            {
+                var startPos = _in.Position;
+                var (htype, size) = await ReadHeaderAsync(ct);
+                if (htype == PxarFormat.Filename || htype == PxarFormat.Goodbye)
+                {
+                    _in.Position = startPos;
+                    await ScanDirBodyAsync(relPath, ct);
+                    return;
+                }
+                await SkipAsync(size - HeaderSize, ct);
+            }
+        }
+
+        // Non-directory: skip metadata records, then act on the first structural record.
+        while (true)
+        {
+            var startPos = _in.Position;
+            var (htype, size) = await ReadHeaderAsync(ct);
+            if (!IsStructural(htype))
+            {
+                await SkipAsync(size - HeaderSize, ct);
+                continue;
+            }
+
+            var payloadLen = size - HeaderSize;
+            switch (modeType)
+            {
+                case ModeReg when htype == PxarFormat.Payload:
+                    var payloadOffset = _in.Position;
+                    _entries.Add(new PxarEntryLocation(relPath, PxarEntryKind.File, payloadOffset, payloadLen, (uint)stat.Mode, stat.MtimeSecs));
+                    await SkipAsync(payloadLen, ct);
+                    return;
+
+                case ModeReg when htype == PxarFormat.Hardlink:
+                    // A hardlink carries a target reference, not its own payload.
+                    _entries.Add(new PxarEntryLocation(relPath, PxarEntryKind.Special, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
+                    await SkipAsync(payloadLen, ct);
+                    return;
+
+                case ModeLnk:
+                    _entries.Add(new PxarEntryLocation(relPath, PxarEntryKind.Symlink, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
+                    if (htype == PxarFormat.Filename || htype == PxarFormat.Goodbye)
+                        _in.Position = startPos;   // belongs to the parent directory
+                    else
+                        await SkipAsync(payloadLen, ct);
+                    return;
+
+                default:
+                    // Regular file with no PAYLOAD (unexpected), or a special file (device/FIFO/socket).
+                    var kind = modeType == ModeReg ? PxarEntryKind.File : PxarEntryKind.Special;
+                    _entries.Add(new PxarEntryLocation(relPath, kind, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
+                    if (htype == PxarFormat.Filename || htype == PxarFormat.Goodbye)
+                        _in.Position = startPos;   // parent's record; not this entry's content
+                    else
+                        await SkipAsync(payloadLen, ct);
+                    return;
             }
         }
     }
 
+    // Records that define archive structure (vs. per-entry metadata like XATTR/ACL/FCAPS/QUOTA).
+    private static bool IsStructural(ulong htype) =>
+        htype == PxarFormat.Filename || htype == PxarFormat.Goodbye || htype == PxarFormat.Payload ||
+        htype == PxarFormat.Symlink || htype == PxarFormat.Device || htype == PxarFormat.Hardlink;
+
     private async Task<(ulong htype, long size)> ReadHeaderAsync(CancellationToken ct)
     {
-        var buffer = new byte[PxarFormat.HeaderSize];
+        var buffer = new byte[HeaderSize];
         await ReadExactAsync(buffer, ct);
         ulong htype = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(0, 8));
         long size = (long)BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(8, 8));
-        if (size < PxarFormat.HeaderSize) throw new InvalidDataException("pxar: header size underflow");
+        if (size < HeaderSize) throw new InvalidDataException("pxar: header size underflow");
         return (htype, size);
     }
 
     private async Task<EntryStat> ReadStatAsync(long entryRecordSize, CancellationToken ct)
     {
-        if (entryRecordSize < PxarFormat.HeaderSize + PxarFormat.StatSize)
+        if (entryRecordSize < HeaderSize + PxarFormat.StatSize)
             throw new InvalidDataException("pxar: ENTRY stat underflow");
 
         var buffer = new byte[PxarFormat.StatSize];
         await ReadExactAsync(buffer, ct);
         var mode = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(0, 8));
         var mtime = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(24, 8));
-        await SkipAsync(entryRecordSize - PxarFormat.HeaderSize - PxarFormat.StatSize, ct);
-        return new EntryStat(mode, checked((ulong)mtime));
+        await SkipAsync(entryRecordSize - HeaderSize - PxarFormat.StatSize, ct);
+        return new EntryStat(mode, mtime < 0 ? 0 : (ulong)mtime);
     }
 
     private async Task<string> ReadNameAsync(long headerSize, CancellationToken ct)
@@ -145,7 +211,7 @@ public sealed class PxarIndexer
 
     private async Task<string> ReadStringAsync(long headerSize, CancellationToken ct)
     {
-        int len = checked((int)(headerSize - PxarFormat.HeaderSize));
+        int len = checked((int)(headerSize - HeaderSize));
         var buffer = new byte[len];
         await ReadExactAsync(buffer, ct);
         int end = len > 0 && buffer[len - 1] == 0 ? len - 1 : len;

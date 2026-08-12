@@ -17,6 +17,15 @@ public static class PxarFormat
     public const ulong Goodbye = 0x2fec4fa642d5731d;
     public const ulong GoodbyeTailMarker = 0xef5eed5b753e1555;
 
+    // Per-entry metadata records that the official client writes between ENTRY and the content
+    // record (PAYLOAD/SYMLINK/…). The indexer skips ANY non-structural record by size, so it does
+    // not depend on this list being exhaustive — these are named for clarity and tests.
+    public const ulong Xattr = 0xb8157091f80bc486;
+    public const ulong Fcaps = 0xf7267db0afed0629;
+    public const ulong AclUser = 0x297dc88b2ef12faf;
+    public const ulong AclGroup = 0x36f2acb56cb3dd0b;
+    public const ulong QuotaProjId = 0x161baf2d8772a72b;
+
     /// <summary>SipHash-2-4 keys pxar uses to hash directory-entry names.</summary>
     public const ulong HashKey1 = 0x83ac3f1cfbb450db;
     public const ulong HashKey2 = 0xaa4f1b6879369fbd;
