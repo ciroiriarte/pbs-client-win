@@ -26,7 +26,9 @@ public sealed class NbdServerTests
     private const ushort CmdRead = 0;
     private const ushort CmdWrite = 1;
     private const ushort CmdDisc = 2;
+    private const ushort CmdFlush = 3;
     private const uint Eperm = 1;
+    private const uint Eio = 5;
     private const uint Einval = 22;
 
     [Fact]
@@ -98,6 +100,39 @@ public sealed class NbdServerTests
     }
 
     [Fact]
+    public async Task Read_SourceThrows_RepliesEioAndKeepsConnection()
+    {
+        await using var fixture = await ServerFixture.StartAsync(new FaultingBlockSource(128 * 1024));
+        using var client = await NbdTestClient.ConnectAsync(fixture.EndPoint, fixture.ExportName);
+
+        var error = await client.ReadErrorAsync(0, 4096);
+        Assert.Equal(Eio, error);
+
+        // The connection must survive a read error so the client can retry.
+        var flush = await client.FlushAsync();
+        Assert.Equal(0u, flush);
+    }
+
+    [Fact]
+    public async Task SecondConnection_IsRefused_WhileOneActive()
+    {
+        await using var fixture = await ServerFixture.StartAsync();
+        using var client1 = await NbdTestClient.ConnectAsync(fixture.EndPoint, fixture.ExportName);
+
+        using var client2 = new TcpClient();
+        await client2.ConnectAsync(fixture.EndPoint.Address, fixture.EndPoint.Port);
+        using var stream2 = client2.GetStream();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var buf = new byte[18];
+        var read = await stream2.ReadAsync(buf, timeout.Token);
+        Assert.Equal(0, read); // refused connection is closed before any handshake bytes
+
+        // The first client is unaffected.
+        var data = await client1.ReadAsync(0, 512);
+        Assert.Equal(fixture.Data.AsSpan(0, 512).ToArray(), data);
+    }
+
+    [Fact]
     public async Task Disconnect_ClosesCleanly()
     {
         await using var fixture = await ServerFixture.StartAsync();
@@ -127,14 +162,14 @@ public sealed class NbdServerTests
         public string ExportName { get; }
         public IPEndPoint EndPoint { get; }
 
-        public static async Task<ServerFixture> StartAsync()
+        public static async Task<ServerFixture> StartAsync(IBlockDeviceSource? source = null)
         {
             var data = new byte[128 * 1024];
             for (var i = 0; i < data.Length; i++)
                 data[i] = unchecked((byte)(((uint)i * 2654435761u) >> 13));
 
             var cts = new CancellationTokenSource();
-            var source = new InMemoryBlockSource(data);
+            source ??= new InMemoryBlockSource(data);
             var server = new NbdServer(source, "disk0.img.fidx");
             var listenTask = server.ListenAsync(IPAddress.Loopback, 0, cts.Token);
 
@@ -173,6 +208,15 @@ public sealed class NbdServerTests
             data.AsMemory((int)offset, buffer.Length).CopyTo(buffer);
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class FaultingBlockSource(long length) : IBlockDeviceSource
+    {
+        public long Length => length;
+        public bool IsReadOnly => true;
+
+        public ValueTask ReadAsync(long offset, Memory<byte> buffer, CancellationToken ct) =>
+            throw new IOException("injected read failure");
     }
 
     private sealed class NbdTestClient : IDisposable
@@ -255,6 +299,16 @@ public sealed class NbdServerTests
             var handle = _nextHandle++;
             await SendRequestAsync(CmdWrite, handle, offset, (uint)data.Length);
             await Stream.WriteAsync(data);
+            var reply = await ReadSimpleReplyAsync();
+            Assert.Equal(ReplyMagic, reply.Magic);
+            Assert.Equal(handle, reply.Handle);
+            return reply.Error;
+        }
+
+        public async Task<uint> FlushAsync()
+        {
+            var handle = _nextHandle++;
+            await SendRequestAsync(CmdFlush, handle, 0, 0);
             var reply = await ReadSimpleReplyAsync();
             Assert.Equal(ReplyMagic, reply.Magic);
             Assert.Equal(handle, reply.Handle);

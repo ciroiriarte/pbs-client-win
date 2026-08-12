@@ -42,10 +42,12 @@ public sealed class NbdServer(IBlockDeviceSource source, string exportName, ILog
     private const ushort CmdWriteZeroes = 6;
 
     private const uint Eperm = 1;
+    private const uint Eio = 5;
     private const uint Einval = 22;
     private const int MaxReadLength = 64 * 1024 * 1024;
 
     private TcpListener? _listener;
+    private int _active;
 
     public IPEndPoint? LocalEndPoint { get; private set; }
 
@@ -63,12 +65,33 @@ public sealed class NbdServer(IBlockDeviceSource source, string exportName, ILog
             while (!ct.IsCancellationRequested)
             {
                 var client = await listener.AcceptTcpClientAsync(ct);
+                if (Interlocked.CompareExchange(ref _active, 1, 0) != 0)
+                {
+                    // Single-connection server: one active client at a time. A single
+                    // ReaderSession is not safe for concurrent reads, and WNBD opens
+                    // exactly one connection — so refuse extras rather than race.
+                    log?.LogWarning("Refusing additional NBD connection; a client is already connected.");
+                    client.Close();
+                    continue;
+                }
                 connections.Add(Task.Run(async () =>
                 {
-                    await using var stream = client.GetStream();
-                    using (client)
+                    try
                     {
-                        await ServeConnectionAsync(stream, ct);
+                        await using var stream = client.GetStream();
+                        using (client)
+                        {
+                            await ServeConnectionAsync(stream, ct);
+                        }
+                    }
+                    catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+                    {
+                        // A client dropping the connection must not fault the server.
+                        log?.LogDebug(ex, "NBD connection ended.");
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _active, 0);
                     }
                 }, ct));
                 connections.RemoveAll(t => t.IsCompleted);
@@ -242,7 +265,18 @@ public sealed class NbdServer(IBlockDeviceSource source, string exportName, ILog
         }
 
         var data = new byte[length];
-        await source.ReadAsync(offset, data, ct);
+        try
+        {
+            await source.ReadAsync(offset, data, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A transient source (PBS) read failure fails only this request with EIO;
+            // the connection stays open so the client can retry the block.
+            log?.LogWarning(ex, "NBD read failed at offset {Offset} length {Length}; replying EIO.", offset, length);
+            await WriteSimpleReplyAsync(stream, Eio, handle, ct);
+            return;
+        }
         await WriteSimpleReplyAsync(stream, 0, handle, ct);
         await stream.WriteAsync(data, ct);
     }

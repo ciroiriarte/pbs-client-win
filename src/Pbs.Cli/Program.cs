@@ -243,6 +243,7 @@ static async Task<int> MapAsync(List<string> positionals, Dictionary<string, str
     var port = int.Parse(flags.GetValueOrDefault("port", "10809"));
     var exportName = flags.GetValueOrDefault("export-name", stored);
     var device = flags.GetValueOrDefault("device");
+    var wnbdClient = OperatingSystem.IsWindows() ? ResolveWnbdClient(flags) : null;
 
     using var cts = new CancellationTokenSource();
     ConsoleCancelEventHandler? cancelHandler = (_, e) =>
@@ -276,18 +277,18 @@ static async Task<int> MapAsync(List<string> positionals, Dictionary<string, str
                 Console.WriteLine("wnbd-client attach is Windows-only; server will keep serving.");
                 Console.WriteLine($"Run on Windows: wnbd-client map {device} {endpoint.Address} --port {endpoint.Port} --export-name {exportName}");
             }
-            else if (FindOnPath("wnbd-client.exe") is null && FindOnPath("wnbd-client") is null)
+            else if (wnbdClient is null)
             {
-                Console.WriteLine("wnbd-client was not found on PATH; server will keep serving.");
+                Console.WriteLine("wnbd-client was not found (checked --wnbd-client-path, PATH, C:\\wnbd, and the Ceph install dir); server will keep serving.");
                 Console.WriteLine($"Run manually: wnbd-client map {device} {endpoint.Address} --port {endpoint.Port} --export-name {exportName}");
             }
             else
             {
-                var exit = await RunProcessAsync("wnbd-client", $"map {QuoteArg(device)} {endpoint.Address} --port {endpoint.Port} --export-name {QuoteArg(exportName)}", cts.Token);
+                var exit = await RunProcessAsync(wnbdClient, $"map {QuoteArg(device)} {endpoint.Address} --port {endpoint.Port} --export-name {QuoteArg(exportName)}", cts.Token);
                 if (exit != 0)
                     return exit;
                 mappedDevice = device;
-                Console.WriteLine($"mapped {device}");
+                Console.WriteLine($"mapped {device} via {wnbdClient}");
             }
         }
 
@@ -298,21 +299,48 @@ static async Task<int> MapAsync(List<string> positionals, Dictionary<string, str
     finally
     {
         Console.CancelKeyPress -= cancelHandler;
-        if (!string.IsNullOrWhiteSpace(mappedDevice) && OperatingSystem.IsWindows())
-            await RunProcessAsync("wnbd-client", $"unmap {QuoteArg(mappedDevice)}", CancellationToken.None);
+        if (!string.IsNullOrWhiteSpace(mappedDevice) && wnbdClient is not null)
+            await RunProcessAsync(wnbdClient, $"unmap {QuoteArg(mappedDevice)}", CancellationToken.None);
     }
 }
 
 static async Task<int> UnmapAsync(List<string> positionals, Dictionary<string, string> flags)
 {
-    _ = flags;
     if (positionals.Count != 1) { Console.Error.WriteLine("unmap: expected <instance>"); return 1; }
     if (!OperatingSystem.IsWindows())
     {
         Console.Error.WriteLine("unmap is Windows-only because it invokes wnbd-client.");
         return 1;
     }
-    return await RunProcessAsync("wnbd-client", $"unmap {QuoteArg(positionals[0])}", CancellationToken.None);
+    var wnbdClient = ResolveWnbdClient(flags);
+    if (wnbdClient is null)
+    {
+        Console.Error.WriteLine("unmap: wnbd-client not found (checked --wnbd-client-path, PATH, C:\\wnbd, and the Ceph install dir).");
+        return 1;
+    }
+    return await RunProcessAsync(wnbdClient, $"unmap {QuoteArg(positionals[0])}", CancellationToken.None);
+}
+
+// Locate wnbd-client.exe: explicit --wnbd-client-path, then PATH, then common
+// install locations (the Ceph bin dir, next to our exe, C:\wnbd).
+static string? ResolveWnbdClient(Dictionary<string, string> flags)
+{
+    var explicitPath = flags.GetValueOrDefault("wnbd-client-path");
+    if (!string.IsNullOrWhiteSpace(explicitPath))
+        return File.Exists(explicitPath) ? explicitPath : null;
+
+    if ((FindOnPath("wnbd-client.exe") ?? FindOnPath("wnbd-client")) is { } onPath)
+        return onPath;
+
+    var candidates = new List<string>();
+    if (Environment.GetEnvironmentVariable("ProgramFiles") is { Length: > 0 } pf)
+    {
+        candidates.Add(Path.Combine(pf, "Ceph", "bin", "wnbd-client.exe"));
+        candidates.Add(Path.Combine(pf, "Cloudbase Solutions", "Ceph", "bin", "wnbd-client.exe"));
+    }
+    candidates.Add(Path.Combine(AppContext.BaseDirectory, "wnbd-client.exe"));
+    candidates.Add(@"C:\wnbd\wnbd-client.exe");
+    return candidates.FirstOrDefault(File.Exists);
 }
 
 static async Task<int> SnapshotsAsync(Dictionary<string, string> flags)
@@ -847,8 +875,8 @@ static void PrintUsage(string version)
     Console.WriteLine("  proxmox-backup-client login <user@realm> --server <host[:port]> [--fingerprint <fp>]");
     Console.WriteLine("  proxmox-backup-client logout <user@realm> --server <host[:port]>");
     Console.WriteLine("  proxmox-backup-client restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>] [--pattern <glob>]");
-    Console.WriteLine("  proxmox-backup-client map <type/id/time> <name.img> --repository <repo> [--ns <ns>] [--bind 127.0.0.1] [--port 10809] [--export-name <name>] [--device <instance>]");
-    Console.WriteLine("  proxmox-backup-client unmap <instance>");
+    Console.WriteLine("  proxmox-backup-client map <type/id/time> <name.img> --repository <repo> [--ns <ns>] [--bind 127.0.0.1] [--port 10809] [--export-name <name>] [--device <instance>] [--wnbd-client-path <path>]");
+    Console.WriteLine("  proxmox-backup-client unmap <instance> [--wnbd-client-path <path>]");
     Console.WriteLine("  proxmox-backup-client snapshot list --repository <repo> [--ns <ns>]");
     Console.WriteLine("  proxmox-backup-client snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");
     Console.WriteLine("  proxmox-backup-client snapshot notes <type/id/time> [text] --repository <repo> [--ns <ns>]");
