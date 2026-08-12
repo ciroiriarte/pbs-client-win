@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows-only. Deliberately NOT part of PbsClientWin.sln so the cross-platform build/tests keep
+    working on Linux/macOS. Windows CI/VM builds this project explicitly for ProjFS mount support.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.ProjFS" Version="2.1.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pbs.Protocol\Pbs.Protocol.csproj" />
+    <ProjectReference Include="..\Pbs.Pxar\Pbs.Pxar.csproj" />
+  </ItemGroup>
+
+</Project>

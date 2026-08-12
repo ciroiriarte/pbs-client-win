@@ -36,6 +36,8 @@ try
             return await RestoreAsync(positionals, flags, multi);
         case "map":
             return await MapAsync(positionals, flags);
+        case "mount":
+            return await MountAsync(positionals, flags);
         case "unmap":
             return await UnmapAsync(positionals, flags);
         case "snapshot" when positionals is ["list", ..]:
@@ -304,6 +306,83 @@ static async Task<int> MapAsync(List<string> positionals, Dictionary<string, str
     }
 }
 
+static async Task<int> MountAsync(List<string> positionals, Dictionary<string, string> flags)
+{
+    if (positionals.Count != 3) { Console.Error.WriteLine("mount: expected <snapshot> <archive.pxar> <dir>"); return 1; }
+
+#if WINDOWS
+    if (!Pbs.ProjFs.ProjFsAvailability.IsEnabled())
+    {
+        Console.Error.WriteLine(Pbs.ProjFs.ProjFsAvailability.EnableGuidance);
+        return 1;
+    }
+
+    var (snapshot, archive, mountRoot) = (positionals[0], positionals[1], positionals[2]);
+    var opts = ResolveConnection(flags);
+    var (type, id, time) = ParseSnapshot(snapshot);
+    var crypt = LoadCrypt(flags)?.Config;
+    var stored = StoredArchiveName(archive);
+    var root = Path.GetFullPath(mountRoot);
+    var tempPath = Path.Combine(Path.GetTempPath(), $"pbs-projfs-{Guid.NewGuid():N}.pxar");
+
+    using var cts = new CancellationTokenSource();
+    ConsoleCancelEventHandler? cancelHandler = (_, e) =>
+    {
+        e.Cancel = true;
+        cts.Cancel();
+    };
+    Console.CancelKeyPress += cancelHandler;
+
+    try
+    {
+        PrepareMountRoot(root);
+
+        await using var reader = await ReaderSession.OpenAsync(opts, type, id, time, cts.Token);
+
+        using var catalogBuffer = new MemoryStream();
+        await reader.RestoreDynamicArchiveAsync("catalog.pcat1.didx", catalogBuffer, crypt, cts.Token);
+        var catalog = PxarCatalog.Parse(catalogBuffer.ToArray());
+
+        await using var tempStream = new FileStream(
+            tempPath,
+            FileMode.CreateNew,
+            FileAccess.ReadWrite,
+            FileShare.Read,
+            bufferSize: 1024 * 1024,
+            FileOptions.SequentialScan);
+
+        var restored = await reader.RestoreDynamicArchiveAsync(stored, tempStream, crypt, cts.Token);
+        tempStream.Position = 0;
+        var index = await PxarIndexer.BuildIndexAsync(tempStream, cts.Token);
+
+        using var session = new Pbs.ProjFs.PxarMountSession(root, catalog, tempStream, index);
+        session.Start();
+
+        Console.WriteLine($"mounted {stored} at {root} read-only ({restored} bytes hydrated)");
+        Console.WriteLine("Press Ctrl-C to unmount.");
+
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        return 0;
+    }
+    finally
+    {
+        Console.CancelKeyPress -= cancelHandler;
+        try { File.Delete(tempPath); } catch { }
+    }
+#else
+    _ = flags;
+    Console.Error.WriteLine("mount is Windows-only because it uses Windows Projected File System (ProjFS).");
+    return await Task.FromResult(1);
+#endif
+}
+
 static async Task<int> UnmapAsync(List<string> positionals, Dictionary<string, string> flags)
 {
     if (positionals.Count != 1) { Console.Error.WriteLine("unmap: expected <instance>"); return 1; }
@@ -342,6 +421,18 @@ static string? ResolveWnbdClient(Dictionary<string, string> flags)
     candidates.Add(@"C:\wnbd\wnbd-client.exe");
     return candidates.FirstOrDefault(File.Exists);
 }
+
+#if WINDOWS
+static void PrepareMountRoot(string root)
+{
+    Directory.CreateDirectory(root);
+
+    foreach (var file in Directory.EnumerateFiles(root))
+        File.Delete(file);
+    foreach (var dir in Directory.EnumerateDirectories(root))
+        Directory.Delete(dir, recursive: true);
+}
+#endif
 
 static async Task<int> SnapshotsAsync(Dictionary<string, string> flags)
 {
@@ -876,6 +967,7 @@ static void PrintUsage(string version)
     Console.WriteLine("  proxmox-backup-client logout <user@realm> --server <host[:port]>");
     Console.WriteLine("  proxmox-backup-client restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>] [--pattern <glob>]");
     Console.WriteLine("  proxmox-backup-client map <type/id/time> <name.img> --repository <repo> [--ns <ns>] [--bind 127.0.0.1] [--port 10809] [--export-name <name>] [--device <instance>] [--wnbd-client-path <path>]");
+    Console.WriteLine("  proxmox-backup-client mount <type/id/time> <name.pxar> <dir> --repository <repo> [--ns <ns>]   (Windows; read-only ProjFS browse)");
     Console.WriteLine("  proxmox-backup-client unmap <instance> [--wnbd-client-path <path>]");
     Console.WriteLine("  proxmox-backup-client snapshot list --repository <repo> [--ns <ns>]");
     Console.WriteLine("  proxmox-backup-client snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");
