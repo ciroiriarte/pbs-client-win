@@ -80,6 +80,7 @@ public sealed class PxarDecoder
 
             if ((mode & ModeFmt) == ModeDir)
             {
+                GuardTargetPath(path);
                 if (_includes is null) Directory.CreateDirectory(path); // else created lazily under matched files
                 await ExtractDirBodyAsync(path, relPath, ct);
             }
@@ -92,6 +93,7 @@ public sealed class PxarDecoder
 
                 if (_includes is null || _includes.IsMatch(relPath, name))
                 {
+                    GuardTargetPath(path);
                     Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                     if (!IsSafeSymlinkTarget(path, target))
                         throw new InvalidDataException($"pxar: unsafe symlink target '{target}' -> escapes extraction root");
@@ -107,6 +109,7 @@ public sealed class PxarDecoder
 
                 if (_includes is null || _includes.IsMatch(relPath, name))
                 {
+                    GuardTargetPath(path);
                     Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                     await ExtractPayloadAsync(path, payloadSize, ct);
                 }
@@ -137,6 +140,43 @@ public sealed class PxarDecoder
         var rootWithSep = _root.EndsWith(Path.DirectorySeparatorChar) ? _root : _root + Path.DirectorySeparatorChar;
         return string.Equals(fullPath, _root, StringComparison.Ordinal) ||
                fullPath.StartsWith(rootWithSep, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Defense-in-depth (#7): never write <em>through</em> a pre-existing on-disk symlink/junction.
+    /// Entry names are already restricted (no <c>/</c>, <c>\</c>, <c>..</c>, <c>.</c>), so the archive
+    /// cannot spell an escaping path — but the extraction root may be non-empty and contain a reparse
+    /// point planted before the restore. Following it would place a write outside the root. Refuse if
+    /// any existing ancestor directory below the root is a reparse point, or if the target itself
+    /// already exists as one. Called before every directory/file/symlink write. The root itself is not
+    /// checked: a symlinked target directory is the caller's own choice, not an archive-controlled path.
+    /// Scope: this defends against reparse points planted <em>before</em> the restore. It is a
+    /// check-then-write guard, so it does not defend against an attacker with concurrent write access to
+    /// the extraction area swapping a directory for a symlink between this check and the write (TOCTOU) —
+    /// Windows/.NET expose no atomic no-follow create to close that, and it is outside this threat model.
+    /// </summary>
+    private void GuardTargetPath(string path)
+    {
+        for (var dir = Path.GetDirectoryName(path);
+             dir is not null && !string.Equals(dir, _root, StringComparison.Ordinal) && IsWithinRoot(dir);
+             dir = Path.GetDirectoryName(dir))
+        {
+            if (IsReparsePoint(dir))
+                throw new InvalidDataException($"pxar: refusing to extract through pre-existing symlink/reparse point '{dir}'");
+        }
+
+        if (IsReparsePoint(path))
+            throw new InvalidDataException($"pxar: refusing to overwrite pre-existing symlink/reparse point '{path}'");
+    }
+
+    private static bool IsReparsePoint(string path)
+    {
+        try
+        {
+            return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+        }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
     }
 
     private async Task ExtractPayloadAsync(string path, long length, CancellationToken ct)

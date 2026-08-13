@@ -8,10 +8,12 @@ namespace Pbs.Vss;
 /// path via <see cref="Map"/> returns its shadow-copy path.
 ///
 /// A system-wide named semaphore serializes our VSS backups so two of our own instances cannot
-/// collide with VSS_E_SNAPSHOT_SET_IN_PROGRESS. (This does not coordinate with other backup software
-/// — e.g. PVE host-level backups or SQL's own VSS writer — which is a broader design item.)
-/// A semaphore, not a Mutex, is used because the acquire and release happen across <c>await</c>
-/// points on different threads, which a Mutex's thread affinity would reject.
+/// collide with VSS_E_SNAPSHOT_SET_IN_PROGRESS. A semaphore, not a Mutex, is used because the acquire
+/// and release happen across <c>await</c> points on different threads, which a Mutex's thread affinity
+/// would reject. The semaphore cannot see <em>other</em> backup software (a PVE host-level backup
+/// driving VSS via the QEMU guest agent, or an application's own VSS writer); overlaps with those still
+/// surface as VSS_E_SNAPSHOT_SET_IN_PROGRESS, so snapshot creation is wrapped in <see cref="VssBusyRetry"/>
+/// (bounded exponential back-off). See docs/VSS-COORDINATION.md.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class VssSnapshotSource : ISnapshotSource
@@ -34,7 +36,9 @@ public sealed class VssSnapshotSource : ISnapshotSource
         _guardHeld = true;
         try
         {
-            _set = VssSnapshotSet.Create(volumes);
+            // Own-instance collisions are already excluded by the semaphore; retry only covers external
+            // contention (another requestor's snapshot set in progress), which the semaphore can't see.
+            _set = VssBusyRetry.Run(() => VssSnapshotSet.Create(volumes));
         }
         catch
         {

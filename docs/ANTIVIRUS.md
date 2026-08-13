@@ -25,13 +25,15 @@ When real-time on-access scanning monitors these operations:
 The WiX v4 installer (`pbs-client-win.msi`) includes a deferred custom action that runs during installation to add Microsoft Defender exclusions automatically via PowerShell:
 
 ```powershell
-Add-MpPreference -ExclusionProcess "proxmox-backup-client.exe", "Pbs.Service.exe" -ExclusionPath "C:\ProgramData\pbs-client-win\"
+Add-MpPreference -ExclusionProcess "proxmox-backup-client.exe", "Pbs.Service.exe" -ExclusionPath "C:\Program Files\pbs-client-win\", "C:\ProgramData\pbs-client-win\"
 ```
+
+The install directory (`[INSTALLFOLDER]`, default `C:\Program Files\pbs-client-win\`) and the working/data directory (`[PROGRAMDATAFOLDER]`, default `C:\ProgramData\pbs-client-win\`) are both excluded; the two binaries are additionally excluded by process name so their I/O is skipped regardless of where they run.
 
 Upon uninstallation, the installer automatically cleans up these exclusions:
 
 ```powershell
-Remove-MpPreference -ExclusionProcess "proxmox-backup-client.exe", "Pbs.Service.exe" -ExclusionPath "C:\ProgramData\pbs-client-win\"
+Remove-MpPreference -ExclusionProcess "proxmox-backup-client.exe", "Pbs.Service.exe" -ExclusionPath "C:\Program Files\pbs-client-win\", "C:\ProgramData\pbs-client-win\"
 ```
 
 ### Key Installer Behavior

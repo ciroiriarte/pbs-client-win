@@ -116,12 +116,12 @@
          without Defender (e.g. Server Core with it removed) never blocks the install. -->
     <SetProperty Id="CA_AddDefenderExclusions"
                  Sequence="execute"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;Add-MpPreference -ExclusionProcess proxmox-backup-client.exe,Pbs.Service.exe -ExclusionPath '[PROGRAMDATAFOLDER]' -ErrorAction SilentlyContinue&quot;"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;Add-MpPreference -ExclusionProcess proxmox-backup-client.exe,Pbs.Service.exe -ExclusionPath '[INSTALLFOLDER]','[PROGRAMDATAFOLDER]' -ErrorAction SilentlyContinue&quot;"
                  Before="CA_AddDefenderExclusions" />
 
     <SetProperty Id="CA_RemoveDefenderExclusions"
                  Sequence="execute"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;Remove-MpPreference -ExclusionProcess proxmox-backup-client.exe,Pbs.Service.exe -ExclusionPath '[PROGRAMDATAFOLDER]' -ErrorAction SilentlyContinue&quot;"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;Remove-MpPreference -ExclusionProcess proxmox-backup-client.exe,Pbs.Service.exe -ExclusionPath '[INSTALLFOLDER]','[PROGRAMDATAFOLDER]' -ErrorAction SilentlyContinue&quot;"
                  Before="CA_RemoveDefenderExclusions" />
 
     <CustomAction Id="CA_AddDefenderExclusions"

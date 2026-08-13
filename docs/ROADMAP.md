@@ -102,19 +102,16 @@ master key recovers the exact data key from our escrow blob.
 
 ## Operational hardening (TODO — mostly M4 install/design)
 
-- **Multi-VSS-client coordination.** On a Windows guest, VSS can be driven concurrently by (1)
-  PVE's host-level VM backup via the QEMU guest agent's fs-freeze/VSS, (2) this in-guest PBS client,
-  and (3) app-triggered backups (e.g. the MSSQL VSS writer). Overlaps cause "a shadow copy operation
-  is already in progress" failures and can corrupt writer/log-chain state. Plan: a **global named
-  mutex** (single-instance guard), graceful "VSS busy" detection + back-off/retry, guidance to
-  offset schedules vs PVE-level backups (and possibly detect an in-progress host backup), and
-  careful SQL-writer component selection so we don't fight SQL's own backups. Ref:
-  https://pve.proxmox.com/wiki/VM_Backup_Consistency
-- **Antivirus on-access exclusions.** On-access scanning fights backup agents (the community Go
-  client reports ~25% slowdown under Defender). There is no universal cross-AV "I am a backup app"
-  declaration, so the installer should add **Windows Defender exclusions** (the client process via
-  `Add-MpPreference -ExclusionProcess`, plus any snapshot/working paths) and **document exclusion
-  steps for third-party AVs**. Compounds with the code-signing/SmartScreen work (SignPath).
+- **Multi-VSS-client coordination.** *Done* (single-instance + external back-off): a system-wide named
+  semaphore serializes our own instances, and snapshot creation retries with bounded back-off when VSS
+  reports a set already in progress from another requestor (PVE host backup via the QEMU guest agent, or
+  an app's VSS writer). Scheduling guidance and the contention model are in `docs/VSS-COORDINATION.md`.
+  Still open: proactively detecting an in-progress host backup, and SQL-writer component selection (with
+  the MSSQL work, #2). Ref: https://pve.proxmox.com/wiki/VM_Backup_Consistency
+- **Antivirus on-access exclusions.** *Done*: the MSI adds/removes Microsoft Defender exclusions (the two
+  processes plus the install and ProgramData paths; toggle with `AV_EXCLUSIONS=0`), and
+  `docs/ANTIVIRUS.md` documents manual/GPO setup plus exclusion steps for CrowdStrike, SentinelOne,
+  Sophos, and ESET. Compounds with the code-signing/SmartScreen work (SignPath).
 
 ## Test matrix (TODO)
 
