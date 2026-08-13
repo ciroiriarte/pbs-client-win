@@ -5,27 +5,25 @@ using Pbs.Pxar;
 namespace Pbs.ProjFs;
 
 /// <summary>
-/// Read-only ProjFS provider for a pxar archive. Serves content from any seekable pxar stream using
-/// <see cref="PxarEntryLocation"/> payload offsets. The stream is supplied by the caller: M2 passes a
-/// ReaderSession-backed ranged-read stream (on-demand, no full restore); the same code also works with
-/// a locally-hydrated stream. Reads are serialized on the stream via an internal lock.
+/// Read-only ProjFS <see cref="IPbsMountProvider"/> for a pxar archive. Serves structure and metadata
+/// from the catalog and file bytes on demand from the shared <see cref="PxarMountModel"/> (which owns
+/// the seekable content stream and serializes reads). ProjFS is the zero-install engine on Windows
+/// client / Server-with-Desktop-Experience; WinFsp covers Server Core (issue #29).
 /// </summary>
-public sealed class PxarMountSession : IDisposable
+public sealed class PxarMountSession : IPbsMountProvider
 {
     private static readonly byte[] ContentId = [1];
     private static readonly byte[] ProviderId = [14];
 
     private readonly string _root;
-    private readonly PxarCatalogEntry _catalog;
-    private readonly Stream _content;
-    private readonly Dictionary<string, PxarEntryLocation> _locations;
-    private readonly Dictionary<string, PxarCatalogEntry> _catalogByPath;
+    private readonly PxarMountModel _model;
     private readonly ConcurrentDictionary<Guid, ActiveEnumeration> _activeEnumerations = new();
-    private readonly object _contentLock = new();
     private readonly VirtualizationInstance _instance;
 
     private bool _started;
     private volatile bool _stopping;
+
+    public string Id => "projfs";
 
     /// <summary>
     /// Enter teardown: subsequent deletes are permitted so the owning process can clear its
@@ -33,24 +31,12 @@ public sealed class PxarMountSession : IDisposable
     /// </summary>
     public void PrepareForTeardown() => _stopping = true;
 
-    public PxarMountSession(
-        string virtualizationRootPath,
-        PxarCatalogEntry catalog,
-        Stream pxarContent,
-        IReadOnlyList<PxarEntryLocation> index)
+    public PxarMountSession(string virtualizationRootPath, PxarMountModel model)
     {
-        ArgumentNullException.ThrowIfNull(catalog);
-        ArgumentNullException.ThrowIfNull(pxarContent);
-        ArgumentNullException.ThrowIfNull(index);
-
-        if (!pxarContent.CanRead || !pxarContent.CanSeek)
-            throw new ArgumentException("ProjFS M1 mount requires a readable, seekable pxar content stream", nameof(pxarContent));
+        ArgumentNullException.ThrowIfNull(model);
 
         _root = Path.GetFullPath(virtualizationRootPath);
-        _catalog = catalog;
-        _content = pxarContent;
-        _locations = index.ToDictionary(entry => NormalizePath(entry.RelativePath), StringComparer.OrdinalIgnoreCase);
-        _catalogByPath = BuildCatalogMap(catalog);
+        _model = model;
 
         var notifications = new[]
         {
@@ -96,7 +82,7 @@ public sealed class PxarMountSession : IDisposable
 
     private HResult StartDirectoryEnumeration(Guid enumerationId, string relativePath)
     {
-        if (!TryGetEntry(relativePath, out var entry) || entry.Type != PxarCatalogEntryType.Directory)
+        if (!_model.TryGetEntry(relativePath, out var entry) || entry.Type != PxarCatalogEntryType.Directory)
             return HResult.FileNotFound;
 
         var items = entry.Children
@@ -141,13 +127,13 @@ public sealed class PxarMountSession : IDisposable
 
     private HResult GetPlaceholderInfo(string relativePath)
     {
-        if (!TryGetEntry(relativePath, out var entry))
+        if (!_model.TryGetEntry(relativePath, out var entry))
             return HResult.FileNotFound;
 
         var time = ToDateTime(entry.MtimeSecs);
-        // ProjFS requires the native (backslash) relative path here; NormalizePath's
-        // forward slashes are only for our internal lookup keys. Passing a '/'-containing
-        // path makes WritePlaceholderInfo produce ERROR_INVALID_NAME for nested entries.
+        // ProjFS requires the native (backslash) relative path here; the model's forward-slash keys
+        // are only for our internal lookups. Passing a '/'-containing path makes WritePlaceholderInfo
+        // produce ERROR_INVALID_NAME for nested entries.
         return _instance.WritePlaceholderInfo(
             relativePath,
             time,
@@ -163,8 +149,7 @@ public sealed class PxarMountSession : IDisposable
 
     private HResult GetFileData(string relativePath, ulong byteOffset, uint length, Guid dataStreamId)
     {
-        var key = NormalizePath(relativePath);
-        if (!_locations.TryGetValue(key, out var location) || location.Kind != PxarEntryKind.File)
+        if (!_model.TryGetFileLocation(relativePath, out var location))
             return HResult.FileNotFound;
 
         if (byteOffset >= (ulong)location.PayloadLength)
@@ -210,28 +195,27 @@ public sealed class PxarMountSession : IDisposable
     }
 
     private HResult QueryFileName(string relativePath) =>
-        TryGetEntry(relativePath, out _) ? HResult.Ok : HResult.FileNotFound;
+        _model.TryGetEntry(relativePath, out _) ? HResult.Ok : HResult.FileNotFound;
 
+    // Fill the ProjFS write buffer from the shared model in bounded (64 KiB) chunks. The model does the
+    // locked seek + read against the content stream; ProjFS supplies the aligned offset/length.
     private void CopyPayloadToWriteBuffer(PxarEntryLocation location, long relativeOffset, Stream output, uint length)
     {
         var buffer = new byte[Math.Min(64 * 1024, length)];
-        var remaining = length;
+        var remaining = (int)length;
+        var fileOffset = relativeOffset;
 
-        lock (_contentLock)
+        output.Position = 0;
+        while (remaining > 0)
         {
-            _content.Position = location.PayloadOffset + relativeOffset;
-            output.Position = 0;
+            var toRead = Math.Min(buffer.Length, remaining);
+            var read = _model.ReadFile(location, fileOffset, buffer, 0, toRead);
+            if (read == 0)
+                throw new EndOfStreamException("pxar payload ended before ProjFS read was satisfied");
 
-            while (remaining > 0)
-            {
-                var toRead = (int)Math.Min(buffer.Length, remaining);
-                var read = _content.Read(buffer, 0, toRead);
-                if (read == 0)
-                    throw new EndOfStreamException("pxar payload ended before ProjFS read was satisfied");
-
-                output.Write(buffer, 0, read);
-                remaining -= (uint)read;
-            }
+            output.Write(buffer, 0, read);
+            remaining -= read;
+            fileOffset += read;
         }
     }
 
@@ -247,39 +231,6 @@ public sealed class PxarMountSession : IDisposable
             time,
             time,
             time);
-    }
-
-    private bool TryGetEntry(string relativePath, out PxarCatalogEntry entry) =>
-        _catalogByPath.TryGetValue(NormalizePath(relativePath), out entry!);
-
-    private static Dictionary<string, PxarCatalogEntry> BuildCatalogMap(PxarCatalogEntry root)
-    {
-        var map = new Dictionary<string, PxarCatalogEntry>(StringComparer.OrdinalIgnoreCase)
-        {
-            [string.Empty] = root,
-        };
-
-        AddChildren(root, string.Empty, map);
-        return map;
-    }
-
-    private static void AddChildren(PxarCatalogEntry parent, string parentPath, Dictionary<string, PxarCatalogEntry> map)
-    {
-        foreach (var child in parent.Children)
-        {
-            var path = parentPath.Length == 0 ? child.Name : $"{parentPath}/{child.Name}";
-            map[path] = child;
-            if (child.Type == PxarCatalogEntryType.Directory)
-                AddChildren(child, path, map);
-        }
-    }
-
-    private static string NormalizePath(string? relativePath)
-    {
-        if (string.IsNullOrWhiteSpace(relativePath))
-            return string.Empty;
-
-        return relativePath.Replace('\\', '/').Trim('/');
     }
 
     private static FileAttributes GetAttributes(PxarCatalogEntry entry)

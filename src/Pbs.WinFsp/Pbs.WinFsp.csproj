@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows-only. Deliberately NOT part of PbsClientWin.sln so the cross-platform build/tests keep
+    working on Linux/macOS (same rationale as Pbs.ProjFs). Windows CI/VM build it via Pbs.Cli's
+    Windows-conditional ProjectReference.
+
+    The managed WinFsp binding (winfsp-msil.dll, namespace Fsp) comes from the winfsp.net NuGet
+    package and ships in our output; the native WinFsp driver + winfsp-x64.dll must be installed on
+    the machine (detect-and-require — see WinFspAvailability and docs/WINFSP.md).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="winfsp.net" Version="2.2.26215" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pbs.Pxar\Pbs.Pxar.csproj" />
+  </ItemGroup>
+
+</Project>

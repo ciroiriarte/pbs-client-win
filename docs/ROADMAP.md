@@ -48,8 +48,13 @@ json`) — verified on Linux and the Windows build VM, and against a live PBS.
 
 Remaining vs the official client:
 - **catalog shell** (interactive browse) — the on-disk catalog is done; only the interactive REPL is missing.
-- **mount / map / unmap** — FUSE + block-device mechanisms are Linux-specific; the Windows equivalent
-  (attach a restored image as a VHD, or a projected filesystem) is a separate design.
+- **mount / unmount** — done on Windows as a **read-only, on-demand pxar browse** with a
+  **dual mount engine** (`--provider projfs|winfsp|auto`): **ProjFS** on the client /
+  Server-with-Desktop-Experience (zero-install), **WinFsp** on **Server Core** (where ProjFS is
+  unavailable) and for drive-letter targets. Both engines share one backing model (catalog + pxar
+  index + ranged reader). See `docs/WINFSP.md`.
+- **map / unmap** — block-device mechanism is Linux-specific; the Windows equivalent attaches a
+  restored image as a block device via WNBD (see `docs/WNBD.md`).
 
 Also done: **change-owner** (POST `change-owner` with backup-type/backup-id/new-owner), **task**
 `list`/`log`/`stop` (`/nodes/{node}/tasks`, node defaults to `localhost`), **login/logout**

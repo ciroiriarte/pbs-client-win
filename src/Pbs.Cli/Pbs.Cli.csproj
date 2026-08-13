@@ -26,6 +26,7 @@
   <ItemGroup Condition="$(TargetFramework.EndsWith('-windows'))">
     <ProjectReference Include="..\Pbs.Vss\Pbs.Vss.csproj" />
     <ProjectReference Include="..\Pbs.ProjFs\Pbs.ProjFs.csproj" />
+    <ProjectReference Include="..\Pbs.WinFsp\Pbs.WinFsp.csproj" />
   </ItemGroup>
 
 </Project>

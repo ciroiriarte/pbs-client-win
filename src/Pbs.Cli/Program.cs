@@ -317,21 +317,61 @@ static async Task<int> MapAsync(List<string> positionals, Dictionary<string, str
 
 static async Task<int> MountAsync(List<string> positionals, Dictionary<string, string> flags)
 {
-    if (positionals.Count != 3) { Console.Error.WriteLine("mount: expected <snapshot> <archive.pxar> <dir>"); return 1; }
+    if (positionals.Count != 3) { Console.Error.WriteLine("mount: expected <snapshot> <archive.pxar> <dir|drive:>"); return 1; }
 
 #if WINDOWS
-    if (!Pbs.ProjFs.ProjFsAvailability.IsEnabled())
+    var (snapshot, archive, mountTarget) = (positionals[0], positionals[1], positionals[2]);
+
+    var providerChoice = (flags.GetValueOrDefault("provider", "auto") ?? "auto").ToLowerInvariant();
+    if (providerChoice is not ("auto" or "projfs" or "winfsp"))
     {
-        Console.Error.WriteLine(Pbs.ProjFs.ProjFsAvailability.EnableGuidance);
+        Console.Error.WriteLine("mount: --provider must be projfs, winfsp, or auto");
         return 1;
     }
 
-    var (snapshot, archive, mountRoot) = (positionals[0], positionals[1], positionals[2]);
+    // Dual-engine selection (issue #29): ProjFS is zero-install on Windows client / Server-with-
+    // Desktop-Experience; WinFsp covers Server Core (where ProjFS is unavailable) and drive letters.
+    var projfsAvailable = Pbs.ProjFs.ProjFsAvailability.IsEnabled();
+    var winfspAvailable = Pbs.WinFsp.WinFspAvailability.IsInstalled();
+
+    string engine;
+    switch (providerChoice)
+    {
+        case "projfs":
+            if (!projfsAvailable) { Console.Error.WriteLine(Pbs.ProjFs.ProjFsAvailability.EnableGuidance); return 1; }
+            engine = "projfs";
+            break;
+        case "winfsp":
+            if (!winfspAvailable) { Console.Error.WriteLine(Pbs.WinFsp.WinFspAvailability.NotFoundGuidance); return 1; }
+            engine = "winfsp";
+            break;
+        default: // auto: prefer ProjFS (zero-install), fall back to WinFsp, else guide.
+            if (projfsAvailable) engine = "projfs";
+            else if (winfspAvailable) engine = "winfsp";
+            else
+            {
+                Console.Error.WriteLine("mount: no mount engine is available on this system.");
+                Console.Error.WriteLine("  ProjFS — " + Pbs.ProjFs.ProjFsAvailability.EnableGuidance);
+                Console.Error.WriteLine("  WinFsp — " + Pbs.WinFsp.WinFspAvailability.NotFoundGuidance);
+                Console.Error.WriteLine("  On Windows Server Core, ProjFS is unavailable; install WinFsp.");
+                return 1;
+            }
+            break;
+    }
+
+    var driveTarget = IsDriveLetterTarget(mountTarget);
+    if (driveTarget && engine == "projfs")
+    {
+        Console.Error.WriteLine("mount: ProjFS mounts to a directory, not a drive letter. Use --provider winfsp, or give a directory path.");
+        return 1;
+    }
+
     var opts = ResolveConnection(flags);
     var (type, id, time) = ParseSnapshot(snapshot);
     var crypt = LoadCrypt(flags)?.Config;
     var stored = StoredArchiveName(archive);
-    var root = Path.GetFullPath(mountRoot);
+    var root = NormalizeMountTarget(mountTarget);
+    var isProjfs = engine == "projfs";
 
     using var cts = new CancellationTokenSource();
     ConsoleCancelEventHandler? cancelHandler = (_, e) =>
@@ -342,17 +382,20 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
     Console.CancelKeyPress += cancelHandler;
     // Console.CancelKeyPress only fires with an attached console; a detached mount
     // process (Start-Process with redirected output) is stopped via signals, so also
-    // catch SIGINT/SIGTERM to run a clean StopVirtualizing + teardown.
+    // catch SIGINT/SIGTERM to run a clean stop + teardown.
     using var sigint = System.Runtime.InteropServices.PosixSignalRegistration.Create(
         System.Runtime.InteropServices.PosixSignal.SIGINT, ctx => { ctx.Cancel = true; cts.Cancel(); });
     using var sigterm = System.Runtime.InteropServices.PosixSignalRegistration.Create(
         System.Runtime.InteropServices.PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; cts.Cancel(); });
 
-    Pbs.ProjFs.PxarMountSession? session = null;
+    Pbs.Pxar.IPbsMountProvider? provider = null;
 
     try
     {
-        PrepareMountRoot(root);
+        // ProjFS projects into a real directory (placeholders), so it must be prepared/cleared.
+        // WinFsp owns the mount point itself (drive letter or directory) — nothing to pre-stage.
+        if (isProjfs)
+            PrepareMountRoot(root);
 
         await using var reader = await ReaderSession.OpenAsync(opts, type, id, time, cts.Token);
 
@@ -360,29 +403,33 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
         await reader.RestoreDynamicArchiveAsync("catalog.pcat1.didx", catalogBuffer, crypt, cts.Token);
         var catalog = PxarCatalog.Parse(catalogBuffer.ToArray());
         // The catalog root lists archives as children (e.g. "<name>.pxar.didx"); the mount
-        // root should expose the selected archive's contents, not the archive list.
+        // should expose the selected archive's contents, not the archive list.
         var archiveCatalog = catalog.Children.FirstOrDefault(c => string.Equals(c.Name, stored, StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidDataException($"catalog does not contain archive root '{stored}'");
 
         // M2: serve on demand. Instead of restoring the whole pxar to a temp file, open a
         // seekable ranged-read stream — PxarIndexer reads only the header regions (skipping
-        // payloads via Seek) and ProjFS GetFileData fetches only the bytes each file needs.
+        // payloads via Seek) and the mount engine fetches only the bytes each file needs.
         var archiveSize = await reader.GetArchiveSizeAsync(stored, crypt, cts.Token);
         using var pxarStream = reader.OpenArchiveStream(stored, archiveSize, crypt);
         var index = await PxarIndexer.BuildIndexAsync(pxarStream, cts.Token);
 
-        session = new Pbs.ProjFs.PxarMountSession(root, archiveCatalog, pxarStream, index);
-        session.Start();
+        // Both engines are backed by the same shared model (catalog + index + ranged content stream).
+        var model = new Pbs.Pxar.PxarMountModel(archiveCatalog, pxarStream, index);
+        provider = isProjfs
+            ? new Pbs.ProjFs.PxarMountSession(root, model)
+            : (Pbs.Pxar.IPbsMountProvider)new Pbs.WinFsp.WinFspMountProvider(root, model);
+        provider.Start();
 
-        // Named stop event so a detached mount can be torn down cleanly via `unmount <dir>`.
+        // Named stop event so a detached mount can be torn down cleanly via `unmount <target>`.
         using var stopEvent = new EventWaitHandle(false, EventResetMode.ManualReset, MountStopEventName(root));
         // RegisteredWaitHandle is not IDisposable; unregister it explicitly before the
         // stop event is disposed.
         var stopReg = ThreadPool.RegisterWaitForSingleObject(
             stopEvent, (_, _) => cts.Cancel(), null, Timeout.Infinite, executeOnlyOnce: true);
 
-        Console.WriteLine($"mounted {stored} at {root} read-only ({archiveSize} bytes, on-demand)");
-        Console.WriteLine($"Press Ctrl-C or run 'proxmox-backup-client unmount {mountRoot}' to unmount.");
+        Console.WriteLine($"mounted {stored} at {root} read-only via {provider.Id} ({archiveSize} bytes, on-demand)");
+        Console.WriteLine($"Press Ctrl-C or run 'proxmox-backup-client unmount {mountTarget}' to unmount.");
 
         try
         {
@@ -398,19 +445,22 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
     finally
     {
         Console.CancelKeyPress -= cancelHandler;
-        if (session is not null)
+        if (provider is not null)
         {
-            // Clear hydrated placeholders while the provider is still running (it permits deletes
-            // during teardown), THEN StopVirtualizing — placeholders can't be deleted once it stops.
-            session.PrepareForTeardown();
-            TryClearMountRoot(root);
-            session.Dispose();
+            // ProjFS: clear hydrated placeholders while the provider still permits deletes, THEN stop
+            // (placeholders can't be deleted once it stops). WinFsp: PrepareForTeardown is a no-op and
+            // there are no placeholders to clear — Dispose just unmounts.
+            provider.PrepareForTeardown();
+            if (isProjfs)
+                TryClearMountRoot(root);
+            provider.Dispose();
         }
-        TryRemoveMountRoot(root);
+        if (isProjfs)
+            TryRemoveMountRoot(root);
     }
 #else
     _ = flags;
-    Console.Error.WriteLine("mount is Windows-only because it uses Windows Projected File System (ProjFS).");
+    Console.Error.WriteLine("mount is Windows-only (it uses ProjFS or WinFsp to project a pxar archive).");
     return await Task.FromResult(1);
 #endif
 }
@@ -497,14 +547,14 @@ static void TryRemoveMountRoot(string root)
 // Signal a running (possibly detached) ProjFS mount to unmount cleanly.
 static int Unmount(List<string> positionals)
 {
-    if (positionals.Count != 1) { Console.Error.WriteLine("unmount: expected <dir>"); return 1; }
+    if (positionals.Count != 1) { Console.Error.WriteLine("unmount: expected <dir|drive:>"); return 1; }
     if (!OperatingSystem.IsWindows())
     {
-        Console.Error.WriteLine("unmount is Windows-only (ProjFS).");
+        Console.Error.WriteLine("unmount is Windows-only (ProjFS/WinFsp).");
         return 1;
     }
 
-    var root = Path.GetFullPath(positionals[0]);
+    var root = NormalizeMountTarget(positionals[0]);
     if (EventWaitHandle.TryOpenExisting(MountStopEventName(root), out var stopEvent))
     {
         using (stopEvent) stopEvent.Set();
@@ -516,12 +566,26 @@ static int Unmount(List<string> positionals)
     return 1;
 }
 
-// Stable per-mount-root name shared between `mount` and `unmount` (same session).
-static string MountStopEventName(string root)
+// A mount target is either a drive letter (e.g. X:) — supported by WinFsp only — or a directory path.
+static bool IsDriveLetterTarget(string target)
 {
-    var full = Path.GetFullPath(root).ToLowerInvariant();
-    var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(full)));
-    return $"pbs-projfs-{hash[..32]}";
+    var t = target.TrimEnd('\\', '/');
+    return t.Length == 2 && char.IsLetter(t[0]) && t[1] == ':';
+}
+
+// Canonical target form shared by `mount` and `unmount` so their stop-event names match: an
+// upper-cased "X:" for a drive letter, or the full path for a directory.
+static string NormalizeMountTarget(string target) =>
+    IsDriveLetterTarget(target) ? target.TrimEnd('\\', '/').ToUpperInvariant() : Path.GetFullPath(target);
+
+// Stable per-mount-target name shared between `mount` and `unmount` (same session). The target is
+// already normalized by NormalizeMountTarget, so it is not re-resolved here (a bare "X:" must not be
+// turned into the current directory on drive X).
+static string MountStopEventName(string target)
+{
+    var key = target.ToLowerInvariant();
+    var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key)));
+    return $"pbs-mount-{hash[..32]}";
 }
 
 static async Task<int> UnmapAsync(List<string> positionals, Dictionary<string, string> flags)
@@ -1118,8 +1182,8 @@ static void PrintUsage(string version)
     Console.WriteLine("  proxmox-backup-client logout <user@realm> --server <host[:port]>");
     Console.WriteLine("  proxmox-backup-client restore <type/id/time> <name.pxar> <target-dir> --repository <repo> [--ns <ns>] [--pattern <glob>]");
     Console.WriteLine("  proxmox-backup-client map <type/id/time> <name.img> --repository <repo> [--ns <ns>] [--bind 127.0.0.1] [--port 10809] [--export-name <name>] [--device <instance>] [--wnbd-client-path <path>]");
-    Console.WriteLine("  proxmox-backup-client mount <type/id/time> <name.pxar> <dir> --repository <repo> [--ns <ns>]   (Windows; read-only ProjFS browse)");
-    Console.WriteLine("  proxmox-backup-client unmount <dir>   (Windows; stop a ProjFS mount)");
+    Console.WriteLine("  proxmox-backup-client mount <type/id/time> <name.pxar> <dir|drive:> --repository <repo> [--ns <ns>] [--provider projfs|winfsp|auto]   (Windows; read-only browse; auto = ProjFS, else WinFsp on Server Core)");
+    Console.WriteLine("  proxmox-backup-client unmount <dir|drive:>   (Windows; stop a ProjFS/WinFsp mount)");
     Console.WriteLine("  proxmox-backup-client unmap <instance> [--wnbd-client-path <path>]");
     Console.WriteLine("  proxmox-backup-client snapshot list --repository <repo> [--ns <ns>]");
     Console.WriteLine("  proxmox-backup-client snapshot forget <type/id/time> --repository <repo> [--ns <ns>]");
