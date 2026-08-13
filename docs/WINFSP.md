@@ -16,9 +16,10 @@ commands, which depend on WNBD instead.
 - A properly **signed kernel driver** (`winfsp-x64.sys`) plus a native DLL
   (`winfsp-x64.dll`) and a **.NET binding**, the managed assembly
   `winfsp-msil.dll` (namespace `Fsp`), distributed as the NuGet package
-  **`winfsp.net`** (currently version `2.2.26215`). The NuGet package is
-  current, not a stale mirror — it supplies the managed binding our code links
-  against.
+  **`winfsp.net`** (pinned to `2.1.25156`, matching the latest **stable** WinFsp
+  release, v2.1). The NuGet package is current, not a stale mirror — it supplies
+  the managed binding our code links against; the native driver + `winfsp-x64.dll`
+  are provided by the installed WinFsp (detect-and-require).
 - Because the kernel driver is properly signed, WinFsp loads cleanly under
   Secure Boot. There is no signing saga here comparable to WNBD's (see
   `docs/WNBD.md`).

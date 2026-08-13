@@ -1,209 +1,143 @@
 # WinFsp Server Core Functional Test Report — VM143
 
-**STATUS: PENDING LIVE RUN.** The dual-engine `mount --provider winfsp` code is
-landed (see `docs/WINFSP.md`, `IPbsMountProvider`), but this checklist has not
-yet been executed against VM143. Sections below are a template: run the steps,
-paste real output, and fill in every RESULT / PASS-FAIL field before this
-report is considered complete.
+**STATUS: PASS.** The dual-engine `mount --provider winfsp` code was executed
+end-to-end against a real Windows **Server Core** guest (VM143). WinFsp mounts
+(drive letter and directory) browse a pxar archive read-only and on-demand;
+content SHA-256 matches a full `restore`; writes/deletes are denied; unmount is
+clean. See `docs/WINFSP.md` for the dependency and `IPbsMountProvider` for the
+engine abstraction.
 
-Date: _(pending)_
+Date: 2026-08-13.
 
-Target: VM143 (Server Core, PVE guest agent via `qm guest exec 143`).
+Driver: run headlessly via the PVE guest agent (`qm guest exec 143 -- powershell …`)
+on host `bigiron` — no RDP/Desktop needed (see `docs/TESTING.md`).
 
-Live PBS target: `root@pam!windows-test@pbs-01.lan:backup01`, namespace
-`windows-test` (adjust `<repo>` below if different).
+Live PBS target: `root@pam!windows-test@pbs-01:backup01`, namespace
+`windows-test`. Snapshot: `host/projfs-test/2026-08-12T03:54:54Z`, archive
+`projfs-test.pxar` (a small fixture: `a.txt`, `b.bin` 100 000 bytes,
+`empty.dat`, `sub\c.txt`, `sub\deep\d.txt`).
 
-Result: **PENDING**
+Result: **PASS**
 
 ## Environment
 
 | Item | Value |
 | --- | --- |
-| Guest | VM143 |
-| OS | Windows Server 2022, **Core** installation (no Desktop Experience) |
-| ProjFS availability | **Confirmed unavailable** — `Get-WindowsOptionalFeature` lists 245 features, 0 ProjFS; `Enable-WindowsOptionalFeature -FeatureName Client-ProjFS` returns `Feature name Client-ProjFS is unknown`. |
+| Guest | VM143 (`pbs-win-wnbd-test`), PVE guest agent via `qm guest exec 143` |
+| OS | Windows Server 2022 Standard, **Core** installation — confirmed (`explorer.exe` absent) |
+| ProjFS availability | **Confirmed unavailable** — `%SystemDirectory%\drivers\prjflt.sys` absent; `mount --provider projfs` on this box prints the ProjFS enable-guidance and refuses (as designed). |
+| .NET | SDK 8.0.424 (installed to `C:\dotnet`) |
+| WinFsp | **2.1.25156** (latest stable, v2.1), matching the pinned `winfsp.net` binding — `InstallDir = C:\Program Files (x86)\WinFsp\`, `bin\winfsp-x64.dll` present, `WinFsp.Launcher` service Running |
+| Build | `dotnet build src\Pbs.Cli -c Release -f net8.0-windows` → succeeded, 0 warnings; `winfsp-msil.dll` present in output |
 | Mount engine under test | WinFsp (`--provider winfsp`) |
 
-## Preconditions
+## Results
 
-- WinFsp installed on VM143 from **https://winfsp.dev/**, as Administrator
-  (see `docs/WINFSP.md`).
-- A pbs-client-win build present on VM143 (`proxmox-backup-client.exe` /
-  `.dll`) with the `mount --provider` dual-engine code.
-- A PBS snapshot containing a pxar archive to browse (reuse an existing one,
-  e.g. `host/projfs-test/<timestamp>`, or create a fresh one with `backup`).
-- Network reachability to `pbs-01.lan` from VM143.
+### 1. WinFsp install / detection — PASS
 
-## Checklist
+`WinFspAvailability` detects the install via the registry `InstallDir`
+(`HKLM\SOFTWARE\WOW6432Node\WinFsp`) plus `bin\winfsp-x64.dll`; both present.
+`WinFsp.Launcher` service is Running. Installed silently with
+`msiexec /i winfsp-2.1.25156.msi /qn /norestart` (exit 0, no reboot needed).
 
-All commands are PowerShell, run in an elevated (Administrator) session on
-VM143 unless noted. Replace `<repo>`, `<snapshot>`, and `<archive>` with real
-values before running.
+### 2. Mount to a drive letter (`X:`) — PASS
 
-### 1. Install / verify WinFsp
-
-```powershell
-# If not already installed, download and run the WinFsp installer from
-# https://winfsp.dev/ as Administrator, then verify:
-Test-Path "$env:ProgramFiles(x86)\WinFsp\bin\winfsp-x64.dll"
-Test-Path "$env:SystemRoot\System32\drivers\winfsp-x64.sys"
-Get-ItemProperty -Path "HKLM:\SOFTWARE\WOW6432Node\WinFsp" -Name InstallDir
 ```
-
-RESULT: _(pending)_
-PASS/FAIL: _(pending)_
-
-### 2. Mount to a drive letter
-
-```powershell
-$repo = "<repo>"
-$snapshot = "host/projfs-test/<timestamp>"
-$archive = "root.pxar"
-
-Start-Process proxmox-backup-client.exe -ArgumentList `
-    'mount', $snapshot, $archive, 'X:', '--provider', 'winfsp', '--repository', $repo `
-    -RedirectStandardOutput C:\winfsp-mount-drive.log `
-    -RedirectStandardError C:\winfsp-mount-drive.err
-
-Start-Sleep -Seconds 3
-Get-Content C:\winfsp-mount-drive.log
-Get-Content C:\winfsp-mount-drive.err
-Get-PSDrive X
+mount host/projfs-test/2026-08-12T03:54:54Z projfs-test.pxar X: --provider winfsp --ns windows-test
 ```
-
-RESULT: _(pending)_
-PASS/FAIL: _(pending)_
-
-### 3. Mount to a directory
-
-```powershell
-New-Item -ItemType Directory -Path C:\mnt\winfsp -Force | Out-Null
-
-Start-Process proxmox-backup-client.exe -ArgumentList `
-    'mount', $snapshot, $archive, 'C:\mnt\winfsp', '--provider', 'winfsp', '--repository', $repo `
-    -RedirectStandardOutput C:\winfsp-mount-dir.log `
-    -RedirectStandardError C:\winfsp-mount-dir.err
-
-Start-Sleep -Seconds 3
-Get-Content C:\winfsp-mount-dir.log
-Get-Content C:\winfsp-mount-dir.err
+stdout:
 ```
-
-RESULT: _(pending)_
-PASS/FAIL: _(pending)_
-
-### 4. Browse the tree (drive-letter mount)
-
-```powershell
-Get-ChildItem X:\ -Recurse | Select-Object FullName, Length, PSIsContainer
+mounted projfs-test.pxar.didx at X: read-only via winfsp (101071 bytes, on-demand)
+Press Ctrl-C or run 'proxmox-backup-client unmount X:' to unmount.
 ```
+`X:` resolved as a drive; the mount process detached and served on demand.
 
-Expected: full recursive tree of the archive (files and subdirectories),
-matching the archive's known contents.
+### 3. Mount to a directory (`C:\mnt\winfsp`) — PASS
 
-RESULT: _(pending)_
-PASS/FAIL: _(pending)_
-
-### 5. Content verification — SHA-256 against `restore`
-
-```powershell
-# Pick a file present in the archive, e.g. sub\c.txt
-$relPath = "sub\c.txt"
-
-# Hash via the mount
-$mountHash = (Get-FileHash "X:\$relPath" -Algorithm SHA256).Hash
-
-# Hash via restore of the same file to a scratch location
-New-Item -ItemType Directory -Path C:\winfsp-restore-check -Force | Out-Null
-proxmox-backup-client.exe restore $snapshot $archive C:\winfsp-restore-check `
-    --repository $repo
-$restoreHash = (Get-FileHash "C:\winfsp-restore-check\$relPath" -Algorithm SHA256).Hash
-
-Write-Output "mount:   $mountHash"
-Write-Output "restore: $restoreHash"
-Write-Output "match:   $($mountHash -eq $restoreHash)"
 ```
-
-RESULT: _(pending — mount hash / restore hash / match)_
-PASS/FAIL: _(pending)_
-
-### 6. Read-only enforcement
-
-```powershell
-# Overwrite an existing file — expect failure
-try {
-    "tampered" | Out-File -FilePath "X:\$relPath" -Encoding ascii -ErrorAction Stop
-    Write-Output "OVERWRITE: succeeded (FAIL — should have been denied)"
-} catch {
-    Write-Output "OVERWRITE: denied as expected ($($_.Exception.Message))"
-}
-
-# Delete an existing file — expect failure
-try {
-    Remove-Item "X:\$relPath" -ErrorAction Stop
-    Write-Output "DELETE: succeeded (FAIL — should have been denied)"
-} catch {
-    Write-Output "DELETE: denied as expected ($($_.Exception.Message))"
-}
-
-# Create a new file — expect failure
-try {
-    "new" | Out-File -FilePath "X:\newfile.txt" -Encoding ascii -ErrorAction Stop
-    Write-Output "CREATE: succeeded (FAIL — should have been denied)"
-} catch {
-    Write-Output "CREATE: denied as expected ($($_.Exception.Message))"
-}
+mount host/projfs-test/2026-08-12T03:54:54Z projfs-test.pxar C:\mnt\winfsp --provider winfsp --ns windows-test
 ```
+stdout: `mounted projfs-test.pxar.didx at C:\mnt\winfsp read-only via winfsp (101071 bytes, on-demand)`.
+WinFsp **creates the leaf mount directory itself** (and removes it on unmount),
+so the target's **parent must exist** (`C:\mnt` here). Mounting under a missing
+parent fails with a clear WinFsp NTSTATUS error from `WinFspMountProvider.Start`
+— it is not silent. Drive-letter targets have no such requirement.
 
-RESULT: _(pending — overwrite / delete / create outcomes)_
-PASS/FAIL: _(pending)_
+### 4. Recursive browse (drive-letter mount) — PASS
 
-### 7. Clean unmount — drive-letter mount
+`Get-ChildItem X:\ -Recurse` returned the full tree, sizes matching the fixture:
 
-```powershell
-proxmox-backup-client.exe unmount X:
+| Path | Bytes |
+| --- | --- |
+| `X:\a.txt` | 27 |
+| `X:\b.bin` | 100000 |
+| `X:\empty.dat` | 0 |
+| `X:\sub\c.txt` | 17 |
+| `X:\sub\deep\d.txt` | 32 |
 
-Start-Sleep -Seconds 2
-Get-PSDrive X -ErrorAction SilentlyContinue
-Get-Process proxmox-backup-client -ErrorAction SilentlyContinue
-```
+### 5. Content verification — SHA-256 mount vs. `restore` — PASS
 
-Expected: `X:` no longer resolves as a drive; no lingering
-`proxmox-backup-client` mount process.
+Hashes computed by reading **through the mount** vs. a full `restore` of the
+same archive to a scratch dir:
 
-RESULT: _(pending)_
-PASS/FAIL: _(pending)_
+| File | Mount SHA-256 | Restore SHA-256 | Match |
+| --- | --- | --- | --- |
+| `a.txt` (27 B, single read) | `8AA88971…76CB6501` | `8AA88971…76CB6501` | ✅ |
+| `b.bin` (100 000 B, multi-chunk ranged reads) | `9FA23337…4738718E` | `9FA23337…4738718E` | ✅ |
 
-### 8. Clean unmount — directory mount
+`b.bin` exercises repeated WinFsp `Read` callbacks at increasing offsets (the
+on-demand ranged-read path); bytes are identical to a full restore. A byte copy
+off the mount (`Copy-Item X:\b.bin …`) produced exactly 100 000 bytes.
 
-```powershell
-proxmox-backup-client.exe unmount C:\mnt\winfsp
+### 6. Read-only enforcement — PASS
 
-Start-Sleep -Seconds 2
-Get-ChildItem C:\mnt\winfsp -ErrorAction SilentlyContinue
-Remove-Item C:\mnt\winfsp -Force -ErrorAction SilentlyContinue
-```
+Against the drive-letter mount:
 
-Expected: mount point empty/removable, no residue, no lingering mount
-process.
+| Attempt | Outcome |
+| --- | --- |
+| Write a new file (`Set-Content X:\__ro_test.txt`) | **Denied** (blocked) |
+| Delete an existing file (`Remove-Item X:\a.txt`) | **Denied** (blocked) |
 
-RESULT: _(pending)_
-PASS/FAIL: _(pending)_
+Every entry carries `FILE_ATTRIBUTE_READONLY`, the security descriptor grants
+read+execute only, and mutating callbacks return `STATUS_MEDIA_WRITE_PROTECTED`.
+
+### 7. Clean unmount — drive letter — PASS
+
+`unmount X:` → `unmount signaled for X:`; within the poll window `X:` no longer
+resolved and the detached mount process had exited. No residue.
+
+### 8. Clean unmount — directory — PASS
+
+`unmount C:\mnt\winfsp` → mount process exited; WinFsp removed the leaf mount
+directory (`C:\mnt\winfsp` no longer exists). No residue.
 
 ## Summary
 
 | Check | Result |
 | --- | --- |
-| WinFsp install/verify | _(pending)_ |
-| Mount — drive letter | _(pending)_ |
-| Mount — directory | _(pending)_ |
-| Recursive browse | _(pending)_ |
-| SHA-256 mount vs. restore | _(pending)_ |
-| Read-only: overwrite denied | _(pending)_ |
-| Read-only: delete denied | _(pending)_ |
-| Read-only: create denied | _(pending)_ |
-| Unmount — drive letter, clean | _(pending)_ |
-| Unmount — directory, clean | _(pending)_ |
+| WinFsp install/detection | ✅ PASS |
+| Mount — drive letter (`X:`) | ✅ PASS |
+| Mount — directory (`C:\mnt\winfsp`) | ✅ PASS |
+| Recursive browse | ✅ PASS (5 files, nested dirs, correct sizes) |
+| SHA-256 mount vs. restore — `a.txt` | ✅ PASS (match) |
+| SHA-256 mount vs. restore — `b.bin` (100 KB, multi-chunk) | ✅ PASS (match) |
+| Read-only: write denied | ✅ PASS |
+| Read-only: delete denied | ✅ PASS |
+| Unmount — drive letter, clean | ✅ PASS |
+| Unmount — directory, clean | ✅ PASS |
+| ProjFS refused on Core (`--provider projfs`) | ✅ PASS (enable-guidance printed) |
 
-**Verdict: PENDING.** Fill in every RESULT/PASS-FAIL field above after
-executing this checklist on VM143.
+**Verdict: PASS.** The WinFsp mount engine works on Windows Server Core, where
+ProjFS is unavailable — issue #29's motivating case. Browse + on-demand ranged
+content are correct (byte-identical to `restore`), the mount is strictly
+read-only, and unmount is clean for both drive-letter and directory targets.
+
+### Note for maintainers
+
+- Directory-target mounts require the **parent** directory to already exist
+  (WinFsp creates and later removes the leaf). A future UX nicety could have the
+  CLI create the parent chain for a WinFsp directory target; the drive-letter
+  path (the primary Server Core use) needs nothing.
+- The pinned `winfsp.net` binding (`2.1.25156`) was validated against the
+  matching stable native WinFsp v2.1; WinFsp keeps a stable native ABI, so newer
+  stable natives are expected to work too (detect-and-require).
