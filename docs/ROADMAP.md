@@ -52,7 +52,7 @@ Remaining vs the official client:
   **dual mount engine** (`--provider projfs|winfsp|auto`): **ProjFS** on the client /
   Server-with-Desktop-Experience (zero-install), **WinFsp** on **Server Core** (where ProjFS is
   unavailable) and for drive-letter targets. Both engines share one backing model (catalog + pxar
-  index + ranged reader). See `docs/WINFSP.md`.
+  index + ranged reader). See `docs/MOUNT.md` (read-only semantics per engine) and `docs/WINFSP.md`.
 - **map / unmap** — block-device mechanism is Linux-specific; the Windows equivalent attaches a
   restored image as a block device via WNBD (see `docs/WNBD.md`).
 

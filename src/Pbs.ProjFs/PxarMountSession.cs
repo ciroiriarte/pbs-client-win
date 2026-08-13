@@ -38,6 +38,18 @@ public sealed class PxarMountSession : IPbsMountProvider
         _root = Path.GetFullPath(virtualizationRootPath);
         _model = model;
 
+        // Read-only enforcement (issue #27). ProjFS lets us DENY the mutations that have a deniable
+        // pre-callback — delete, rename, hardlink, and convert-to-full (overwrite) of projected
+        // content — all wired to return "denied" below. It has NO deniable pre-create callback
+        // (NewFileCreated is a post-op notification), so a user creating a brand-new file anywhere
+        // under the mount cannot be blocked here. A directory deny-create ACL is not an option either:
+        // ProjFS hydrates placeholders in the browsing user's security context, so any user-facing
+        // deny-create also denies enumeration/reads and breaks the mount (verified on VM144,
+        // docs/projfs-m1-gaps-report.md). The residual gap is benign: such a file lands only as local
+        // scratch under the virtualization root, is removed when `unmount` tears the root down (#28),
+        // and never touches the backup (the mount reads through a ReaderSession with no write path).
+        // For a strictly read-only mount that also denies new-file creation, use the WinFsp engine
+        // (`--provider winfsp`, #29).
         var notifications = new[]
         {
             new NotificationMapping(

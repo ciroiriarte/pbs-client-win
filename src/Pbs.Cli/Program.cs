@@ -429,6 +429,10 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
             stopEvent, (_, _) => cts.Cancel(), null, Timeout.Infinite, executeOnlyOnce: true);
 
         Console.WriteLine($"mounted {stored} at {root} read-only via {provider.Id} ({archiveSize} bytes, on-demand)");
+        // ProjFS can't pre-deny new-file creation anywhere under the mount (issue #27); such files are
+        // local scratch, discarded on unmount and never written to the backup. WinFsp is strictly read-only.
+        if (isProjfs)
+            Console.WriteLine("note: new files created under the mount are local scratch (removed on unmount, never written to the backup); use --provider winfsp for a strictly read-only mount.");
         Console.WriteLine($"Press Ctrl-C or run 'proxmox-backup-client unmount {mountTarget}' to unmount.");
 
         try
