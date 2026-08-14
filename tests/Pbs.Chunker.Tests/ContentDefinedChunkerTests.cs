@@ -33,6 +33,40 @@ public class ContentDefinedChunkerTests
         }
     }
 
+    // #4: the streaming chunker must yield byte-identical chunks (and digests) to the in-memory Split,
+    // otherwise a streamed backup would produce a different .didx and break dedup/restore.
+    [Theory]
+    [InlineData(0)]        // empty
+    [InlineData(1)]        // single byte
+    [InlineData(63)]       // < MinSize
+    [InlineData(4096)]     // == MaxSize
+    [InlineData(4097)]     // just over MaxSize (forces a max-size cut)
+    [InlineData(200_000)]  // many content-defined boundaries
+    [InlineData(524_288)]
+    public async Task SplitStreamAsync_MatchesSplit(int length)
+    {
+        var data = DeterministicData(length, seed: 7);
+        var chunker = new ContentDefinedChunker(SmallOptions);
+        var expected = chunker.Split(data);
+
+        var streamed = new List<byte[]>();
+        using var ms = new MemoryStream(data, writable: false);
+        await foreach (var chunk in chunker.SplitStreamAsync(ms))
+            streamed.Add(chunk);
+
+        Assert.Equal(expected.Count, streamed.Count);
+        long off = 0;
+        for (int i = 0; i < expected.Count; i++)
+        {
+            Assert.Equal(expected[i].Length, streamed[i].Length);
+            Assert.Equal(data.AsSpan((int)off, expected[i].Length).ToArray(), streamed[i]);
+            Assert.Equal(expected[i].Digest, ChunkDigest.Compute(streamed[i]));
+            off += streamed[i].Length;
+        }
+        Assert.Equal(length, off);
+        Assert.Equal(data, streamed.SelectMany(c => c).ToArray()); // reassembles to the input
+    }
+
     [Fact]
     public void Chunks_ReassembleToInput()
     {

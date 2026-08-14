@@ -66,7 +66,7 @@ public static class FixedImage
         await session.CloseFixedIndexAsync(storedName, wid, chunks.Count, size, FixedIndex.ComputeCsum(digests),
             crypt is null ? "none" : "encrypt", ct);
 
-        return new DynamicArchive.UploadStats(chunks.Count, uploaded, reused);
+        return new DynamicArchive.UploadStats(chunks.Count, uploaded, reused, size);
     }
 
     // Fill one block from the source; if the source ends before the block is full, zero-pad the

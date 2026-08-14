@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Pbs.Abstractions;
 
 namespace Pbs.Chunker;
@@ -41,6 +42,49 @@ public sealed class ContentDefinedChunker
             pos = end;
         }
         return result;
+    }
+
+    /// <summary>
+    /// Streaming counterpart of <see cref="Split"/>: read <paramref name="input"/> and yield each
+    /// content-defined chunk's bytes without ever holding the whole input in memory. Boundaries are
+    /// found with the same <see cref="NextBoundary"/> as the in-memory path — a chunk boundary depends
+    /// only on the bytes up to it, so a boundary determined once MaxSize bytes are buffered is final —
+    /// so for any input this yields byte-identical chunks (and therefore identical digests) to
+    /// <c>Split(fullInput)</c>. Memory use is bounded to roughly MaxSize plus one read block.
+    /// </summary>
+    public async IAsyncEnumerable<byte[]> SplitStreamAsync(Stream input, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+
+        const int ReadBlock = 128 * 1024;
+        var buf = new byte[_options.MaxSize + ReadBlock];
+        var len = 0;          // valid bytes in buf
+        var eof = false;
+
+        while (!eof || len > 0)
+        {
+            // Fill until we hold at least a full max-size chunk's worth (so the next boundary is final) or EOF.
+            while (!eof && len < _options.MaxSize)
+            {
+                var n = await input.ReadAsync(buf.AsMemory(len, buf.Length - len), ct);
+                if (n == 0) { eof = true; break; }
+                len += n;
+            }
+
+            var start = 0;
+            while (start < len && (len - start >= _options.MaxSize || eof))
+            {
+                var end = NextBoundary(buf.AsSpan(0, len), start);
+                yield return buf[start..end];
+                start = end;
+            }
+
+            if (start > 0)
+            {
+                Array.Copy(buf, start, buf, 0, len - start);
+                len -= start;
+            }
+        }
     }
 
     /// <summary>

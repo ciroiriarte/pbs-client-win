@@ -16,6 +16,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- System.IO.Pipelines: stream the pxar into the chunker/uploader without buffering it whole (#4). -->
+    <PackageReference Include="System.IO.Pipelines" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Pbs.Abstractions\Pbs.Abstractions.csproj" />
     <ProjectReference Include="..\Pbs.Protocol\Pbs.Protocol.csproj" />
     <ProjectReference Include="..\Pbs.Chunker\Pbs.Chunker.csproj" />

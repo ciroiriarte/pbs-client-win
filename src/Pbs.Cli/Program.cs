@@ -144,7 +144,7 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
     if (useVss) Console.WriteLine($"  VSS: snapshotting {string.Join(", ", volumes)}");
 
     await using var session = await BackupSession.OpenAsync(opts, backupType, backupId, backupTime);
-    if (crypt is not null) { session.SetKeyFingerprint(crypt.Config.FingerprintHex()); Console.WriteLine($"  encryption: on (key {crypt.Config.FingerprintHex()[..17]}…)"); }
+    if (crypt is not null) { session.SetCrypt(crypt.Config); Console.WriteLine($"  encryption: on (key {crypt.Config.FingerprintHex()[..17]}…)"); }
     var catalogRoots = new List<(string Stored, PxarDirNode Tree)>(); // for the .pcat1 catalog (file mode)
     foreach (var (name, target) in items)
     {
@@ -165,10 +165,14 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
             var readPath = snapshot.Map(path); // live path, or its shadow-copy path under VSS
             var tree = PxarTree.FromDirectory(readPath, excludes);
             catalogRoots.Add((stored, tree));
-            using var pxar = new MemoryStream();
-            await PxarEncoder.EncodeAsync(tree, pxar);
-            Console.WriteLine($"  {name}: {path} -> {stored} ({pxar.Length} bytes)");
-            stats = await DynamicArchive.UploadAsync(session, stored, pxar.ToArray(), crypt: crypt?.Config, incremental: incremental);
+            // Stream the pxar straight into the chunker/uploader (#4): the encoder writes one end while
+            // UploadStreamAsync chunks/uploads from the other, so the whole archive is never buffered.
+            // BridgeAsync propagates an encoder error as a faulted read, so a truncated archive is never
+            // committed as a successful backup.
+            stats = await DynamicArchive.BridgeAsync(
+                writer => PxarEncoder.EncodeAsync(tree, writer),
+                reader => DynamicArchive.UploadStreamAsync(session, stored, reader, crypt: crypt?.Config, incremental: incremental));
+            Console.WriteLine($"  {name}: {path} -> {stored} ({stats.TotalBytes} bytes)");
         }
         Console.WriteLine($"    chunks: {stats.TotalChunks} total, {stats.UploadedChunks} uploaded, {stats.ReusedChunks} reused");
     }

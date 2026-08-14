@@ -47,6 +47,17 @@ public sealed class CryptConfig
         return sha.GetHashAndReset();
     }
 
+    /// <summary>
+    /// Manifest authentication tag: <c>HMAC-SHA256(id_key, data)</c>, matching upstream
+    /// <c>CryptConfig::compute_auth_tag</c> (the HMAC key is the same derived <c>id_key</c> used for
+    /// chunk digests, wrapped as an HMAC PKey). Used to sign the backup manifest (#6).
+    /// </summary>
+    public byte[] ComputeAuthTag(ReadOnlySpan<byte> data)
+    {
+        using var hmac = new HMACSHA256(_idKey);
+        return hmac.ComputeHash(data.ToArray());
+    }
+
     /// <summary>Key fingerprint (32 bytes) — identifies the key in the backup manifest.</summary>
     public byte[] Fingerprint() => ComputeDigest(FingerprintInput);
 

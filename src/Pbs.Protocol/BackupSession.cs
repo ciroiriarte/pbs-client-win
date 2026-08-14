@@ -25,6 +25,7 @@ public sealed class BackupSession : IAsyncDisposable
     private readonly HttpClient _http;
     private readonly List<ManifestFile> _files = new();
     private string? _keyFingerprint;
+    private CryptConfig? _crypt;
 
     public string BackupType { get; }
     public string BackupId { get; }
@@ -111,6 +112,17 @@ public sealed class BackupSession : IAsyncDisposable
 
     /// <summary>Record the key fingerprint stored in the manifest for encrypted backups.</summary>
     public void SetKeyFingerprint(string fingerprint) => _keyFingerprint = fingerprint;
+
+    /// <summary>
+    /// Provide the encryption key for an encrypted backup: records its fingerprint (stored in the
+    /// manifest's <c>unprotected</c> block) and enables manifest signing (#6) at <see cref="FinishAsync"/>.
+    /// </summary>
+    public void SetCrypt(CryptConfig crypt)
+    {
+        ArgumentNullException.ThrowIfNull(crypt);
+        _crypt = crypt;
+        _keyFingerprint = crypt.FingerprintHex();
+    }
 
     /// <summary>Close a dynamic index and record its file in the manifest.</summary>
     public async Task CloseDynamicIndexAsync(string archiveName, long wid, long chunkCount, long size, ChunkDigest indexCsum, string cryptMode = "none", CancellationToken ct = default)
@@ -203,6 +215,24 @@ public sealed class BackupSession : IAsyncDisposable
                 ? new Dictionary<string, object?>()
                 : new Dictionary<string, object?> { ["key-fingerprint"] = _keyFingerprint },
         };
+
+        // Sign the manifest (#6) when encrypted: HMAC-SHA256(id_key, canonical-json of the protected
+        // fields), matching upstream — the signature is over the manifest with "unprotected" and
+        // "signature" excluded, so it authenticates backup-type/id/time + the files list. The official
+        // client verifies this on restore with the same key.
+        if (_crypt is not null)
+        {
+            var signed = new Dictionary<string, object?>
+            {
+                ["backup-type"] = manifest["backup-type"],
+                ["backup-id"] = manifest["backup-id"],
+                ["backup-time"] = manifest["backup-time"],
+                ["files"] = manifest["files"],
+            };
+            var sig = _crypt.ComputeAuthTag(CanonicalJson.Serialize(signed));
+            manifest["signature"] = Convert.ToHexString(sig).ToLowerInvariant();
+        }
+
         var json = JsonSerializer.SerializeToUtf8Bytes(manifest, new JsonSerializerOptions { WriteIndented = true });
         var blob = DataBlob.Encode(json, compress: true);
         await UploadBlobAsync(ManifestBlobName, blob, ct);
