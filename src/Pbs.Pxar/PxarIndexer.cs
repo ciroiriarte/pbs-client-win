@@ -12,13 +12,23 @@ public enum PxarEntryKind
     Special,
 }
 
+/// <param name="PayloadOffset">Offset of the file's first data byte: in the archive itself, or — when
+/// <paramref name="InPayloadArchive"/> — in the separate payload stream (<c>.ppxar</c>) of a split archive.</param>
+/// <param name="InPayloadArchive">The payload lives in the split archive's payload stream (PAYLOAD_REF).</param>
+/// <param name="MtimeNanos">Nanoseconds part of the modification time.</param>
 public sealed record PxarEntryLocation(
     string RelativePath,
     PxarEntryKind Kind,
     long PayloadOffset,
     long PayloadLength,
     uint Mode,
-    ulong MtimeSecs);
+    ulong MtimeSecs,
+    bool InPayloadArchive = false,
+    uint MtimeNanos = 0)
+{
+    /// <summary>For a split-archive file: offset of its PAYLOAD header in the payload stream (what PAYLOAD_REF stores).</summary>
+    public long PayloadRefOffset => PayloadOffset - PxarFormat.HeaderSize;
+}
 
 /// <summary>
 /// Builds a seek-friendly index over a pxar archive without reading file payload bytes.
@@ -38,6 +48,13 @@ public sealed class PxarIndexer
 
     private readonly Stream _in;
     private readonly List<PxarEntryLocation> _entries = new();
+    private readonly Dictionary<string, PxarEntryLocation> _byPath = new(StringComparer.Ordinal);
+
+    private void Add(PxarEntryLocation location)
+    {
+        _entries.Add(location);
+        _byPath[location.RelativePath] = location;
+    }
 
     private PxarIndexer(Stream input) => _in = input;
 
@@ -94,6 +111,22 @@ public sealed class PxarIndexer
             var relPath = relativePrefix.Length == 0 ? name : $"{relativePrefix}/{name}";
 
             var (entryType, entrySize) = await ReadHeaderAsync(ct);
+            if (entryType == PxarFormat.Hardlink)
+            {
+                // A hardlink is FILENAME + HARDLINK (offset:u64 | archive-relative target path) with no
+                // ENTRY of its own. Resolve it to the (earlier) target so it reads the same content.
+                if (entrySize < HeaderSize + 8)
+                    throw new InvalidDataException("pxar: HARDLINK record too short");
+                var linkBody = new byte[checked((int)(entrySize - HeaderSize))];
+                await ReadExactAsync(linkBody, ct);
+                int linkEnd = linkBody[^1] == 0 ? linkBody.Length - 1 : linkBody.Length;
+                var linkTarget = Encoding.UTF8.GetString(linkBody, 8, linkEnd - 8).TrimStart('/');
+                _byPath.TryGetValue(linkTarget, out var target);
+                Add(target is { Kind: PxarEntryKind.File }
+                    ? target with { RelativePath = relPath }
+                    : new PxarEntryLocation(relPath, PxarEntryKind.Special, 0, 0, 0, 0));
+                continue;
+            }
             if (entryType != PxarFormat.Entry)
                 throw new InvalidDataException($"pxar: expected ENTRY after FILENAME, got htype {entryType:x16}");
 
@@ -110,7 +143,7 @@ public sealed class PxarIndexer
 
         if (modeType == ModeDir)
         {
-            _entries.Add(new PxarEntryLocation(relPath, PxarEntryKind.Directory, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
+            Add(new PxarEntryLocation(relPath, PxarEntryKind.Directory, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
             // Skip the directory's own metadata records; the body starts at the first FILENAME/GOODBYE.
             while (true)
             {
@@ -142,18 +175,31 @@ public sealed class PxarIndexer
             {
                 case ModeReg when htype == PxarFormat.Payload:
                     var payloadOffset = _in.Position;
-                    _entries.Add(new PxarEntryLocation(relPath, PxarEntryKind.File, payloadOffset, payloadLen, (uint)stat.Mode, stat.MtimeSecs));
+                    Add(new PxarEntryLocation(relPath, PxarEntryKind.File, payloadOffset, payloadLen, (uint)stat.Mode, stat.MtimeSecs, MtimeNanos: stat.MtimeNanos));
                     await SkipAsync(payloadLen, ct);
+                    return;
+
+                case ModeReg when htype == PxarFormat.PayloadRef:
+                    if (size != HeaderSize + PxarFormat.PayloadRefSize)
+                        throw new InvalidDataException("pxar: malformed PAYLOAD_REF");
+                    var refBuf = new byte[PxarFormat.PayloadRefSize];
+                    await ReadExactAsync(refBuf, ct);
+                    var refOffset = BinaryPrimitives.ReadUInt64LittleEndian(refBuf.AsSpan(0, 8));
+                    var refSize = BinaryPrimitives.ReadUInt64LittleEndian(refBuf.AsSpan(8, 8));
+                    if (refOffset > long.MaxValue - HeaderSize || refSize > long.MaxValue)
+                        throw new InvalidDataException("pxar: PAYLOAD_REF out of range");
+                    Add(new PxarEntryLocation(relPath, PxarEntryKind.File, (long)refOffset + HeaderSize, (long)refSize,
+                        (uint)stat.Mode, stat.MtimeSecs, InPayloadArchive: true, MtimeNanos: stat.MtimeNanos));
                     return;
 
                 case ModeReg when htype == PxarFormat.Hardlink:
                     // A hardlink carries a target reference, not its own payload.
-                    _entries.Add(new PxarEntryLocation(relPath, PxarEntryKind.Special, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
+                    Add(new PxarEntryLocation(relPath, PxarEntryKind.Special, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
                     await SkipAsync(payloadLen, ct);
                     return;
 
                 case ModeLnk:
-                    _entries.Add(new PxarEntryLocation(relPath, PxarEntryKind.Symlink, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
+                    Add(new PxarEntryLocation(relPath, PxarEntryKind.Symlink, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
                     if (htype == PxarFormat.Filename || htype == PxarFormat.Goodbye)
                         _in.Position = startPos;   // belongs to the parent directory
                     else
@@ -163,7 +209,7 @@ public sealed class PxarIndexer
                 default:
                     // Regular file with no PAYLOAD (unexpected), or a special file (device/FIFO/socket).
                     var kind = modeType == ModeReg ? PxarEntryKind.File : PxarEntryKind.Special;
-                    _entries.Add(new PxarEntryLocation(relPath, kind, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
+                    Add(new PxarEntryLocation(relPath, kind, 0, 0, (uint)stat.Mode, stat.MtimeSecs));
                     if (htype == PxarFormat.Filename || htype == PxarFormat.Goodbye)
                         _in.Position = startPos;   // parent's record; not this entry's content
                     else
@@ -176,7 +222,8 @@ public sealed class PxarIndexer
     // Records that define archive structure (vs. per-entry metadata like XATTR/ACL/FCAPS/QUOTA).
     private static bool IsStructural(ulong htype) =>
         htype == PxarFormat.Filename || htype == PxarFormat.Goodbye || htype == PxarFormat.Payload ||
-        htype == PxarFormat.Symlink || htype == PxarFormat.Device || htype == PxarFormat.Hardlink;
+        htype == PxarFormat.PayloadRef || htype == PxarFormat.Symlink || htype == PxarFormat.Device ||
+        htype == PxarFormat.Hardlink;
 
     private async Task<(ulong htype, long size)> ReadHeaderAsync(CancellationToken ct)
     {
@@ -197,8 +244,9 @@ public sealed class PxarIndexer
         await ReadExactAsync(buffer, ct);
         var mode = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(0, 8));
         var mtime = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(24, 8));
+        var nanos = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(32, 4));
         await SkipAsync(entryRecordSize - HeaderSize - PxarFormat.StatSize, ct);
-        return new EntryStat(mode, mtime < 0 ? 0 : (ulong)mtime);
+        return new EntryStat(mode, mtime < 0 ? 0 : (ulong)mtime, nanos);
     }
 
     private async Task<string> ReadNameAsync(long headerSize, CancellationToken ct)
@@ -241,5 +289,5 @@ public sealed class PxarIndexer
         }
     }
 
-    private readonly record struct EntryStat(ulong Mode, ulong MtimeSecs);
+    private readonly record struct EntryStat(ulong Mode, ulong MtimeSecs, uint MtimeNanos);
 }

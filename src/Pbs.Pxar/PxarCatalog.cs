@@ -46,6 +46,70 @@ public static class PxarCatalog
     // kept local so Pbs.Pxar stays independent of Pbs.Protocol.
     private static readonly byte[] CatalogMagic = { 145, 253, 96, 249, 196, 103, 88, 213 };
 
+    /// <summary>
+    /// Build a catalog tree straight from an archive index (<see cref="PxarIndexer"/> output). Used when
+    /// a snapshot has no <c>.pcat1</c>: upstream writes none for split archives (pxar v2, issue #33),
+    /// whose metadata stream is small enough to serve as the catalog itself. The root is named "".
+    /// </summary>
+    public static PxarCatalogEntry FromIndex(IReadOnlyList<PxarEntryLocation> index)
+    {
+        ArgumentNullException.ThrowIfNull(index);
+        var pending = new List<(string Parent, PxarEntryLocation Location)>(index.Count);
+
+        foreach (var loc in index)
+        {
+            if (loc.RelativePath.Length == 0) continue; // the root directory itself
+            int slash = loc.RelativePath.LastIndexOf('/');
+            var parent = slash < 0 ? string.Empty : loc.RelativePath[..slash];
+            pending.Add((parent, loc));
+        }
+
+        // Group by parent first, then build records recursively (a directory's children must all be
+        // known before its immutable record is created).
+        var grouped = new Dictionary<string, List<PxarEntryLocation>>(StringComparer.Ordinal);
+        foreach (var (parent, loc) in pending)
+        {
+            if (!grouped.TryGetValue(parent, out var list)) grouped[parent] = list = new();
+            list.Add(loc);
+        }
+
+        PxarCatalogEntry Build(string path, string name, long mtime)
+        {
+            var kids = new List<PxarCatalogEntry>();
+            if (grouped.TryGetValue(path, out var locs))
+            {
+                foreach (var loc in locs)
+                {
+                    int slash = loc.RelativePath.LastIndexOf('/');
+                    var childName = slash < 0 ? loc.RelativePath : loc.RelativePath[(slash + 1)..];
+                    kids.Add(loc.Kind == PxarEntryKind.Directory
+                        ? Build(loc.RelativePath, childName, (long)loc.MtimeSecs)
+                        : new PxarCatalogEntry(childName, CatalogType(loc), loc.Kind == PxarEntryKind.File ? loc.PayloadLength : 0,
+                            (long)loc.MtimeSecs, Array.Empty<PxarCatalogEntry>()));
+                }
+            }
+            return new PxarCatalogEntry(name, PxarCatalogEntryType.Directory, 0, mtime, kids);
+        }
+
+        var rootMtime = index.FirstOrDefault(l => l.RelativePath.Length == 0)?.MtimeSecs ?? 0;
+        return Build(string.Empty, string.Empty, (long)rootMtime);
+    }
+
+    private static PxarCatalogEntryType CatalogType(PxarEntryLocation loc) => loc.Kind switch
+    {
+        PxarEntryKind.File => PxarCatalogEntryType.File,
+        PxarEntryKind.Symlink => PxarCatalogEntryType.Symlink,
+        PxarEntryKind.Directory => PxarCatalogEntryType.Directory,
+        _ => (loc.Mode & 0xF000) switch
+        {
+            0x1000 => PxarCatalogEntryType.Fifo,
+            0x2000 => PxarCatalogEntryType.CharDevice,
+            0x6000 => PxarCatalogEntryType.BlockDevice,
+            0xC000 => PxarCatalogEntryType.Socket,
+            _ => PxarCatalogEntryType.Hardlink,
+        },
+    };
+
     /// <summary>Build a complete <c>.pcat1</c> payload from a pxar directory tree.</summary>
     public static byte[] Build(PxarDirNode root)
     {
