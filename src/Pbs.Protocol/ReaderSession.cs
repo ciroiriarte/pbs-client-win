@@ -40,6 +40,22 @@ public sealed class ReaderSession : IAsyncDisposable
         GetBytesAsync($"download?file-name={Uri.EscapeDataString(fileName)}", ct);
 
     /// <summary>
+    /// File names listed in the snapshot's manifest (<c>index.json.blob</c>), e.g. <c>root.pxar.didx</c>
+    /// or <c>root.mpxar.didx</c>. The manifest blob is never encrypted (only signed), so no key is needed.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ListManifestFilesAsync(CancellationToken ct = default)
+    {
+        var json = DataBlob.Decode(await DownloadFileAsync(BackupSession.ManifestBlobName, ct));
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("files", out var files) || files.ValueKind != System.Text.Json.JsonValueKind.Array)
+            return Array.Empty<string>();
+        return files.EnumerateArray()
+            .Select(f => f.TryGetProperty("filename", out var n) ? n.GetString() : null)
+            .OfType<string>()
+            .ToList();
+    }
+
+    /// <summary>
     /// Download and decode a single chunk. With <paramref name="crypt"/> the chunk is an encrypted
     /// DataBlob and is decrypted; otherwise it is a plaintext DataBlob.
     /// </summary>

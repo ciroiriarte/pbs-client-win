@@ -124,6 +124,9 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
     var imageMode = flags.ContainsKey("image");   // back up whole volumes as fixed images (FIDX)
     var useVss = flags.ContainsKey("vss") || imageMode; // image backup always needs a snapshot
     var incremental = !flags.ContainsKey("no-incremental");
+    var detectionMode = SplitArchiveBackup.ParseMode(flags.GetValueOrDefault("change-detection-mode"));
+    if (imageMode && detectionMode != ChangeDetectionMode.Legacy)
+        throw new ArgumentException("--change-detection-mode applies to file (pxar) backups, not --image");
     var excludes = new PxarExcludes(multi["exclude"]); // --exclude glob patterns (file backup only)
     if (!excludes.IsEmpty) Console.WriteLine($"  excludes: {string.Join(", ", multi["exclude"])}");
 
@@ -161,9 +164,23 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
         {
             var path = Path.GetFullPath(target);
             if (!Directory.Exists(path)) throw new ArgumentException($"'{path}' is not a directory (use --image to back up a volume)");
-            stored = StoredArchiveName(name);
             var readPath = snapshot.Map(path); // live path, or its shadow-copy path under VSS
             var tree = PxarTree.FromDirectory(readPath, excludes);
+            if (detectionMode != ChangeDetectionMode.Legacy)
+            {
+                // pxar v2 split archive (#33): <name>.mpxar.didx + <name>.ppxar.didx, no catalog
+                // (the metadata archive serves as one), matching upstream.
+                var split = await SplitArchiveBackup.BackupAsync(session, opts, PxarArchiveNames.BaseName(name), tree,
+                    detectionMode, crypt?.Config, incremental, Console.WriteLine);
+                var (metaName, payloadName) = PxarArchiveNames.SplitPair(PxarArchiveNames.BaseName(name));
+                var p = split.Plan;
+                if (split.UsedReference)
+                    Console.WriteLine($"    {p.FilesReused} unchanged, reusable files ({p.BytesReused} bytes), {p.FilesReencoded} changed or non-reusable ({p.BytesReencoded} bytes), {p.PaddingBytes} bytes padding in {split.Injected} injected chunks");
+                Console.WriteLine($"  {name}: {path} -> {metaName} ({split.Metadata.TotalBytes} bytes) + {payloadName} ({split.Payload.TotalBytes} bytes)");
+                Console.WriteLine($"    chunks: {split.Metadata.TotalChunks + split.Payload.TotalChunks} total, {split.Metadata.UploadedChunks + split.Payload.UploadedChunks} uploaded, {split.Metadata.ReusedChunks + split.Payload.ReusedChunks} reused");
+                continue;
+            }
+            stored = StoredArchiveName(name);
             catalogRoots.Add((stored, tree));
             // Stream the pxar straight into the chunker/uploader (#4): the encoder writes one end while
             // UploadStreamAsync chunks/uploads from the other, so the whole archive is never buffered.
@@ -230,13 +247,39 @@ static async Task<int> RestoreAsync(List<string> positionals, Dictionary<string,
     var patterns = multi["pattern"].ToList();
     if (patterns.Count > 0) Console.WriteLine($"  patterns: {string.Join(", ", patterns)}");
 
-    var stored = StoredArchiveName(archive);
+    // root.pxar may be stored as one archive or, since pxar v2, split into .mpxar + .ppxar (#33).
+    var (stored, payloadName) = PxarArchiveNames.Resolve(archive, await reader.ListManifestFilesAsync());
     using var buffer = new MemoryStream();
     await reader.RestoreDynamicArchiveAsync(stored, buffer, crypt);
     buffer.Position = 0;
-    await PxarDecoder.ExtractAsync(buffer, target, patterns);
-    Console.WriteLine($"restored {stored} -> {target} ({buffer.Length} bytes)");
+
+    PxarExtractResult result;
+    if (payloadName is null)
+    {
+        result = await PxarDecoder.ExtractAsync(buffer, target, patterns);
+        Console.WriteLine($"restored {stored} -> {target} ({buffer.Length} bytes)");
+    }
+    else
+    {
+        // The payload stream is read through a seekable ranged reader: gaps between file payloads
+        // (reused chunks in metadata-mode backups) are skipped without downloading them.
+        var payloadSize = await reader.GetArchiveSizeAsync(payloadName, crypt);
+        await using var payload = new BufferedStream(reader.OpenArchiveStream(payloadName, payloadSize, crypt), 1 << 20);
+        result = await PxarDecoder.ExtractSplitAsync(buffer, payload, target, patterns);
+        Console.WriteLine($"restored {stored} + {payloadName} -> {target} ({buffer.Length} + {payloadSize} bytes)");
+    }
+    ReportExtractResult(result);
     return 0;
+}
+
+static void ReportExtractResult(PxarExtractResult result)
+{
+    if (result.HardlinksCopied > 0)
+        Console.WriteLine($"  {result.HardlinksCopied} hardlink(s) restored as independent copies");
+    if (result.HardlinksSkipped > 0)
+        Console.WriteLine($"  warning: {result.HardlinksSkipped} hardlink(s) skipped: their target was not restored");
+    if (result.SpecialSkipped > 0)
+        Console.WriteLine($"  warning: {result.SpecialSkipped} device/FIFO/socket entr(y/ies) skipped: not representable on this system");
 }
 
 static async Task<int> MapAsync(List<string> positionals, Dictionary<string, string> flags)
@@ -403,13 +446,10 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
 
         await using var reader = await ReaderSession.OpenAsync(opts, type, id, time, cts.Token);
 
-        using var catalogBuffer = new MemoryStream();
-        await reader.RestoreDynamicArchiveAsync("catalog.pcat1.didx", catalogBuffer, crypt, cts.Token);
-        var catalog = PxarCatalog.Parse(catalogBuffer.ToArray());
-        // The catalog root lists archives as children (e.g. "<name>.pxar.didx"); the mount
-        // should expose the selected archive's contents, not the archive list.
-        var archiveCatalog = catalog.Children.FirstOrDefault(c => string.Equals(c.Name, stored, StringComparison.OrdinalIgnoreCase))
-            ?? throw new InvalidDataException($"catalog does not contain archive root '{stored}'");
+        // root.pxar may be stored as one archive or split into .mpxar + .ppxar (#33).
+        var manifestFiles = await reader.ListManifestFilesAsync(cts.Token);
+        string? payloadName;
+        (stored, payloadName) = PxarArchiveNames.Resolve(archive, manifestFiles);
 
         // M2: serve on demand. Instead of restoring the whole pxar to a temp file, open a
         // seekable ranged-read stream — PxarIndexer reads only the header regions (skipping
@@ -417,9 +457,34 @@ static async Task<int> MountAsync(List<string> positionals, Dictionary<string, s
         var archiveSize = await reader.GetArchiveSizeAsync(stored, crypt, cts.Token);
         using var pxarStream = reader.OpenArchiveStream(stored, archiveSize, crypt);
         var index = await PxarIndexer.BuildIndexAsync(pxarStream, cts.Token);
+        Stream? payloadStream = null;
+        if (payloadName is not null)
+        {
+            var payloadSize = await reader.GetArchiveSizeAsync(payloadName, crypt, cts.Token);
+            payloadStream = reader.OpenArchiveStream(payloadName, payloadSize, crypt);
+            archiveSize += payloadSize;
+        }
+        using var payloadStreamOwner = payloadStream;
+
+        PxarCatalogEntry archiveCatalog;
+        if (manifestFiles.Contains("catalog.pcat1.didx"))
+        {
+            using var catalogBuffer = new MemoryStream();
+            await reader.RestoreDynamicArchiveAsync("catalog.pcat1.didx", catalogBuffer, crypt, cts.Token);
+            var catalog = PxarCatalog.Parse(catalogBuffer.ToArray());
+            // The catalog root lists archives as children (e.g. "<name>.pxar.didx"); the mount
+            // should expose the selected archive's contents, not the archive list.
+            archiveCatalog = catalog.Children.FirstOrDefault(c => string.Equals(c.Name, stored, StringComparison.OrdinalIgnoreCase))
+                ?? PxarCatalog.FromIndex(index);
+        }
+        else
+        {
+            // Split-archive snapshots carry no .pcat1: the metadata archive is the catalog.
+            archiveCatalog = PxarCatalog.FromIndex(index);
+        }
 
         // Both engines are backed by the same shared model (catalog + index + ranged content stream).
-        var model = new Pbs.Pxar.PxarMountModel(archiveCatalog, pxarStream, index);
+        var model = new Pbs.Pxar.PxarMountModel(archiveCatalog, pxarStream, index, payloadStream);
         provider = isProjfs
             ? new Pbs.ProjFs.PxarMountSession(root, model)
             : (Pbs.Pxar.IPbsMountProvider)new Pbs.WinFsp.WinFspMountProvider(root, model);
@@ -1213,6 +1278,8 @@ static void PrintUsage(string version)
     Console.WriteLine("  proxmox-backup-client key paperkey [path] [--output-format text]");
     Console.WriteLine();
     Console.WriteLine("backup file mode also accepts repeatable --exclude <glob> (e.g. --exclude *.tmp --exclude /logs/**).");
+    Console.WriteLine("backup file mode also accepts --change-detection-mode legacy|data|metadata (default legacy): data/metadata");
+    Console.WriteLine("  write a split archive (<name>.mpxar + <name>.ppxar); metadata reuses unchanged files' data from the previous snapshot.");
     Console.WriteLine("snapshot list accepts --output-format json.");
     Console.WriteLine();
     Console.WriteLine("Repository: [AUTHID@]HOST[:PORT]:DATASTORE  (e.g. root@pam!tok@pbs.example:store01 or root@pam@pbs.example:store01 for ticket auth)");

@@ -52,9 +52,24 @@ public sealed class ContentDefinedChunker
     /// so for any input this yields byte-identical chunks (and therefore identical digests) to
     /// <c>Split(fullInput)</c>. Memory use is bounded to roughly MaxSize plus one read block.
     /// </summary>
-    public async IAsyncEnumerable<byte[]> SplitStreamAsync(Stream input, [EnumeratorCancellation] CancellationToken ct = default)
+    public IAsyncEnumerable<byte[]> SplitStreamAsync(Stream input, CancellationToken ct = default)
+        => SplitStreamAsync(input, suggestedBoundaries: null, basePosition: 0, ct);
+
+    /// <summary>
+    /// <see cref="SplitStreamAsync(Stream, CancellationToken)"/> with suggested boundaries, like
+    /// upstream's <c>PayloadChunker</c> for split-archive payload streams (issue #33): a chunk ends at
+    /// the first suggested position that makes it at least MinSize (and at most MaxSize) long, unless
+    /// the content-defined boundary comes first. Suggesting each file's start makes chunks align with
+    /// files, so a later backup can reuse an unchanged file's chunks with little padding.
+    /// </summary>
+    /// <param name="suggestedBoundaries">Ascending absolute positions (in the coordinates of <paramref name="basePosition"/>).</param>
+    /// <param name="basePosition">Absolute position of the first byte of <paramref name="input"/>.</param>
+    public async IAsyncEnumerable<byte[]> SplitStreamAsync(
+        Stream input, IReadOnlyList<long>? suggestedBoundaries, long basePosition, [EnumeratorCancellation] CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(input);
+        int next = 0; // first suggestion not yet behind the current chunk start
+        long consumed = 0; // bytes of input already yielded
 
         const int ReadBlock = 128 * 1024;
         var buf = new byte[_options.MaxSize + ReadBlock];
@@ -75,9 +90,21 @@ public sealed class ContentDefinedChunker
             while (start < len && (len - start >= _options.MaxSize || eof))
             {
                 var end = NextBoundary(buf.AsSpan(0, len), start);
+                if (suggestedBoundaries is not null)
+                {
+                    long chunkStart = basePosition + consumed + start;
+                    while (next < suggestedBoundaries.Count && suggestedBoundaries[next] - chunkStart < _options.MinSize)
+                        next++; // behind us, or would make a chunk below MinSize: ignored (as upstream)
+                    if (next < suggestedBoundaries.Count)
+                    {
+                        long cut = suggestedBoundaries[next] - chunkStart; // >= MinSize
+                        if (cut < end - start) end = start + (int)cut;      // before the content-defined cut
+                    }
+                }
                 yield return buf[start..end];
                 start = end;
             }
+            consumed += start;
 
             if (start > 0)
             {

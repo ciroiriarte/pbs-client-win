@@ -17,6 +17,7 @@ namespace Pbs.Pxar;
 public sealed class PxarMountModel
 {
     private readonly Stream _content;
+    private readonly Stream? _payloadContent;
     private readonly object _contentLock = new();
     private readonly Dictionary<string, PxarCatalogEntry> _catalogByPath;
     private readonly Dictionary<string, PxarEntryLocation> _locations;
@@ -27,7 +28,9 @@ public sealed class PxarMountModel
     /// <param name="catalog">Parsed catalog for the mounted archive (its root directory and children).</param>
     /// <param name="pxarContent">Readable, seekable pxar content stream (payloads live at the indexed offsets).</param>
     /// <param name="index">Payload locations from <see cref="PxarIndexer.BuildIndexAsync"/>.</param>
-    public PxarMountModel(PxarCatalogEntry catalog, Stream pxarContent, IReadOnlyList<PxarEntryLocation> index)
+    /// <param name="payloadContent">For a split archive (issue #33): readable, seekable payload stream
+    /// (<c>.ppxar</c>) that locations with <see cref="PxarEntryLocation.InPayloadArchive"/> read from.</param>
+    public PxarMountModel(PxarCatalogEntry catalog, Stream pxarContent, IReadOnlyList<PxarEntryLocation> index, Stream? payloadContent = null)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(pxarContent);
@@ -35,6 +38,11 @@ public sealed class PxarMountModel
 
         if (!pxarContent.CanRead || !pxarContent.CanSeek)
             throw new ArgumentException("a pxar mount requires a readable, seekable content stream", nameof(pxarContent));
+        if (payloadContent is not null && (!payloadContent.CanRead || !payloadContent.CanSeek))
+            throw new ArgumentException("a split-archive mount requires a readable, seekable payload stream", nameof(payloadContent));
+        if (payloadContent is null && index.Any(e => e.InPayloadArchive))
+            throw new ArgumentException("the index references a payload stream (split archive), but none was given", nameof(payloadContent));
+        _payloadContent = payloadContent;
 
         Root = catalog;
         _content = pxarContent;
@@ -82,13 +90,14 @@ public sealed class PxarMountModel
 
         var toRead = (int)Math.Min(count, location.PayloadLength - byteOffset);
 
+        var source = location.InPayloadArchive ? _payloadContent! : _content;
         lock (_contentLock)
         {
-            _content.Position = location.PayloadOffset + byteOffset;
+            source.Position = location.PayloadOffset + byteOffset;
             var read = 0;
             while (read < toRead)
             {
-                var n = _content.Read(buffer, offset + read, toRead - read);
+                var n = source.Read(buffer, offset + read, toRead - read);
                 if (n == 0)
                     throw new EndOfStreamException("pxar payload ended before the mount read was satisfied");
                 read += n;
