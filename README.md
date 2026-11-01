@@ -37,6 +37,7 @@ The sibling repo [`pbs-client`](https://github.com/ciroiriarte/pbs-client) cover
 | Client-side encryption (AES-256-GCM, `--keyfile`-compatible) | **working (M2)** — official client decrypts it |
 | VSS application-consistent snapshots (`backup --vss`) | **working (M2)** — captures open/locked files, verified on Windows Server 2022 |
 | Incremental backups (known-chunk reuse) | planned (M2) |
+| Split archives (pxar v2 `.mpxar`/`.ppxar`, `--change-detection-mode data\|metadata`) | **working** — unchanged files reuse the previous payload chunks unread; interoperable with the official client both ways |
 | Full-disk / bare-metal image backup + restore (`backup --image`, FIDX) | **working (M3)** — VSS volume image, verified on Windows |
 | Windows Service, scheduling, MSI packaging, code signing | planned (M4) |
 | MSSQL application-aware backup (VSS Writer → SQL VDI/SMO) | planned (M5) |
@@ -64,6 +65,13 @@ proxmox-backup-client backup root.pxar:C:\Data --vss --ns my-namespace --backup-
 # Windows, whole-volume image backup via VSS (FIDX), and restore to a raw image:
 proxmox-backup-client backup disk0.img:C: --image --ns my-namespace --backup-id my-host
 proxmox-backup-client restore host/my-host/1700000000 disk0.img /restore/disk0.img --image --ns my-namespace
+
+# split archive (pxar v2), like the official client's --change-detection-mode:
+#   data:     every file is read, stored as root.mpxar.didx (metadata) + root.ppxar.didx (payload)
+#   metadata: files whose size, mode and mtime match the previous snapshot reuse its payload
+#             chunks without being read (the first such backup behaves like "data")
+proxmox-backup-client backup root.pxar:C:\Data --vss --change-detection-mode metadata --ns my-namespace --backup-id my-host
+# restore/mount take the plain name (root.pxar) and find the split pair automatically
 
 # encrypted (interoperable with the official client's --keyfile):
 #   proxmox-backup-client key create --kdf none key.json

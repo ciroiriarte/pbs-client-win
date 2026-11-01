@@ -74,6 +74,37 @@ public sealed class BackupSession : IAsyncDisposable
         return await resp.Content.ReadAsByteArrayAsync(ct);
     }
 
+    /// <summary>
+    /// Backup time (unix seconds) of the group's previous snapshot — the one <c>previous?…</c>
+    /// downloads refer to — or null for the group's first backup.
+    /// </summary>
+    public async Task<long?> GetPreviousBackupTimeAsync(CancellationToken ct = default)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, "previous_backup_time")
+        {
+            Version = HttpVersion.Version20,
+            VersionPolicy = HttpVersionPolicy.RequestVersionExact,
+        };
+        using var resp = await _http.SendAsync(req, ct);
+        var text = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new HttpRequestException($"GET previous_backup_time -> {(int)resp.StatusCode}: {text}");
+        using var doc = JsonDocument.Parse(text);
+        return doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Number
+            ? data.GetInt64()
+            : null;
+    }
+
+    /// <summary>
+    /// The previous snapshot's manifest JSON (decoded <c>index.json.blob</c>), or null when there is
+    /// none. Used to check that a metadata-mode reference uses the same encryption mode and key.
+    /// </summary>
+    public async Task<JsonDocument?> DownloadPreviousManifestAsync(CancellationToken ct = default)
+    {
+        var blob = await DownloadPreviousIndexAsync(ManifestBlobName, ct);
+        return blob is null ? null : JsonDocument.Parse(DataBlob.Decode(blob));
+    }
+
     /// <summary>Create a dynamic (content-defined) index writer for <paramref name="archiveName"/> (e.g. <c>root.pxar.didx</c>).</summary>
     public async Task<long> CreateDynamicIndexAsync(string archiveName, CancellationToken ct = default)
     {

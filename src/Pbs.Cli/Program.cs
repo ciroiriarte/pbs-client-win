@@ -124,6 +124,9 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
     var imageMode = flags.ContainsKey("image");   // back up whole volumes as fixed images (FIDX)
     var useVss = flags.ContainsKey("vss") || imageMode; // image backup always needs a snapshot
     var incremental = !flags.ContainsKey("no-incremental");
+    var detectionMode = SplitArchiveBackup.ParseMode(flags.GetValueOrDefault("change-detection-mode"));
+    if (imageMode && detectionMode != ChangeDetectionMode.Legacy)
+        throw new ArgumentException("--change-detection-mode applies to file (pxar) backups, not --image");
     var excludes = new PxarExcludes(multi["exclude"]); // --exclude glob patterns (file backup only)
     if (!excludes.IsEmpty) Console.WriteLine($"  excludes: {string.Join(", ", multi["exclude"])}");
 
@@ -161,9 +164,23 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
         {
             var path = Path.GetFullPath(target);
             if (!Directory.Exists(path)) throw new ArgumentException($"'{path}' is not a directory (use --image to back up a volume)");
-            stored = StoredArchiveName(name);
             var readPath = snapshot.Map(path); // live path, or its shadow-copy path under VSS
             var tree = PxarTree.FromDirectory(readPath, excludes);
+            if (detectionMode != ChangeDetectionMode.Legacy)
+            {
+                // pxar v2 split archive (#33): <name>.mpxar.didx + <name>.ppxar.didx, no catalog
+                // (the metadata archive serves as one), matching upstream.
+                var split = await SplitArchiveBackup.BackupAsync(session, opts, PxarArchiveNames.BaseName(name), tree,
+                    detectionMode, crypt?.Config, incremental, Console.WriteLine);
+                var (metaName, payloadName) = PxarArchiveNames.SplitPair(PxarArchiveNames.BaseName(name));
+                var p = split.Plan;
+                if (split.UsedReference)
+                    Console.WriteLine($"    {p.FilesReused} unchanged, reusable files ({p.BytesReused} bytes), {p.FilesReencoded} changed or non-reusable ({p.BytesReencoded} bytes), {p.PaddingBytes} bytes padding in {split.Injected} injected chunks");
+                Console.WriteLine($"  {name}: {path} -> {metaName} ({split.Metadata.TotalBytes} bytes) + {payloadName} ({split.Payload.TotalBytes} bytes)");
+                Console.WriteLine($"    chunks: {split.Metadata.TotalChunks + split.Payload.TotalChunks} total, {split.Metadata.UploadedChunks + split.Payload.UploadedChunks} uploaded, {split.Metadata.ReusedChunks + split.Payload.ReusedChunks} reused");
+                continue;
+            }
+            stored = StoredArchiveName(name);
             catalogRoots.Add((stored, tree));
             // Stream the pxar straight into the chunker/uploader (#4): the encoder writes one end while
             // UploadStreamAsync chunks/uploads from the other, so the whole archive is never buffered.
@@ -1261,6 +1278,8 @@ static void PrintUsage(string version)
     Console.WriteLine("  proxmox-backup-client key paperkey [path] [--output-format text]");
     Console.WriteLine();
     Console.WriteLine("backup file mode also accepts repeatable --exclude <glob> (e.g. --exclude *.tmp --exclude /logs/**).");
+    Console.WriteLine("backup file mode also accepts --change-detection-mode legacy|data|metadata (default legacy): data/metadata");
+    Console.WriteLine("  write a split archive (<name>.mpxar + <name>.ppxar); metadata reuses unchanged files' data from the previous snapshot.");
     Console.WriteLine("snapshot list accepts --output-format json.");
     Console.WriteLine();
     Console.WriteLine("Repository: [AUTHID@]HOST[:PORT]:DATASTORE  (e.g. root@pam!tok@pbs.example:store01 or root@pam@pbs.example:store01 for ticket auth)");
