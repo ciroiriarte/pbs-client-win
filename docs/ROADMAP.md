@@ -46,6 +46,20 @@ Also done: **catalog** (`.pcat1` upload + `catalog dump`, byte-compatible — th
 TLS upload leg with `--repository`, using the server's `benchmark=true` discard mode; `--output-format
 json`) — verified on Linux and the Windows build VM, and against a live PBS.
 
+Also done: **split archives (pxar v2, issue #33)** — `backup --change-detection-mode
+legacy|data|metadata` writes `name.mpxar.didx` + `name.ppxar.didx`; in metadata mode, files whose
+size/mode/mtime match the previous snapshot are referenced by injecting its payload chunks (upstream's
+reuse rules: contiguous runs, 10% padding threshold, boundary chunk shared across holes), and new
+payload is chunked with file starts as suggested boundaries (upstream's `PayloadChunker`) so later
+backups align with files. `restore`, `mount` and selective restore read split archives from either
+client, including upstream's xattr/ACL/fcaps/quota/hardlink/device records. Verified live: each
+client restores and builds on the other's metadata-mode snapshots (upstream reused 240/240 files
+from ours with 32 B padding; ours 240/240 from upstream's), encrypted, VSS on Windows, and WinFsp
+mount on Server Core; server `verify` OK. No catalog is written in split mode (as upstream).
+Note: on Linux sources our .NET mtimes have 100 ns resolution, so upstream metadata-mode backups of
+the same Linux tree after one of ours see nanosecond mtime mismatches and re-read those files
+(correct, just no reuse); NTFS timestamps are 100 ns natively, so Windows sources are unaffected.
+
 Remaining vs the official client:
 - **catalog shell** (interactive browse) — the on-disk catalog is done; only the interactive REPL is missing.
 - **mount / unmount** — done on Windows as a **read-only, on-demand pxar browse** with a

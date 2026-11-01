@@ -13,8 +13,57 @@ public sealed class PxarEncoder
 {
     private readonly Stream _out;
     private long _pos;
+    private readonly PayloadPlan? _plan; // split archive: files become PAYLOAD_REFs into the payload stream
 
-    private PxarEncoder(Stream output) => _out = output;
+    private PxarEncoder(Stream output, PayloadPlan? plan = null)
+    {
+        _out = output;
+        _plan = plan;
+    }
+
+    /// <summary>
+    /// Encode the metadata stream (<c>.mpxar</c>) of a split archive (pxar v2, issue #33): the same
+    /// tree as <see cref="EncodeAsync"/>, but each regular file carries <c>PAYLOAD_REF(offset, size)</c>
+    /// pointing into the payload stream written by <see cref="PxarPayloadWriter"/> from the same
+    /// <paramref name="plan"/>.
+    /// </summary>
+    public static async Task EncodeMetadataAsync(PxarDirNode root, Stream output, PayloadPlan plan, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        var enc = new PxarEncoder(output, plan);
+        await enc.WriteAsync(BuildFormatVersion(2), ct);
+        await enc.EncodeNodeAsync(root, ct);
+    }
+
+    /// <summary>Regular files of <paramref name="root"/> in the exact order the encoder writes them, with their archive-relative paths.</summary>
+    public static IReadOnlyList<(PxarFileNode File, string RelativePath)> FilesInEncodeOrder(PxarDirNode root)
+    {
+        var result = new List<(PxarFileNode, string)>();
+        void Walk(PxarDirNode dir, string prefix)
+        {
+            foreach (var child in SortedChildren(dir))
+            {
+                var rel = prefix.Length == 0 ? child.Name : $"{prefix}/{child.Name}";
+                if (child is PxarFileNode f) result.Add((f, rel));
+                else if (child is PxarDirNode d) Walk(d, rel);
+            }
+        }
+        Walk(root, string.Empty);
+        return result;
+    }
+
+    /// <summary>The stat mode the encoder writes for <paramref name="node"/>.</summary>
+    public static ulong ModeOf(PxarNode node) => node switch
+    {
+        PxarDirNode => PxarFormat.ModeDir,
+        PxarSymlinkNode => PxarFormat.ModeSymlink,
+        _ => PxarFormat.ModeFile,
+    };
+
+    // pxar orders directory entries by their raw name bytes.
+    private static List<PxarNode> SortedChildren(PxarDirNode dir) => dir.Children
+        .OrderBy(c => Encoding.UTF8.GetBytes(c.Name), ByteArrayComparer.Instance)
+        .ToList();
 
     /// <summary>Encode <paramref name="root"/> (a directory) as a pxar archive into <paramref name="output"/>.</summary>
     public static async Task EncodeAsync(PxarDirNode root, Stream output, bool writeFormatVersion = true, CancellationToken ct = default)
@@ -32,6 +81,9 @@ public sealed class PxarEncoder
 
         switch (node)
         {
+            case PxarFileNode file when _plan is not null:
+                await WriteAsync(BuildPayloadRef(_plan.OffsetOf(file), file.Length), ct);
+                break;
             case PxarFileNode file:
                 await WritePayloadAsync(file, ct);
                 break;
@@ -48,10 +100,7 @@ public sealed class PxarEncoder
 
     private async Task WriteDirectoryBodyAsync(PxarDirNode dir, long entryStart, CancellationToken ct)
     {
-        // pxar orders directory entries by their raw name bytes.
-        var children = dir.Children
-            .OrderBy(c => Encoding.UTF8.GetBytes(c.Name), ByteArrayComparer.Instance)
-            .ToList();
+        var children = SortedChildren(dir);
 
         var items = new List<GoodbyeItem>(children.Count);
         foreach (var child in children)
@@ -96,12 +145,7 @@ public sealed class PxarEncoder
 
     private static byte[] BuildEntry(PxarNode node)
     {
-        ulong mode = node switch
-        {
-            PxarDirNode => PxarFormat.ModeDir,
-            PxarSymlinkNode => PxarFormat.ModeSymlink,
-            _ => PxarFormat.ModeFile,
-        };
+        ulong mode = ModeOf(node);
 
         var buffer = new byte[PxarFormat.HeaderSize + PxarFormat.StatSize];
         WriteHeaderInto(buffer, PxarFormat.Entry, buffer.Length);
@@ -133,7 +177,16 @@ public sealed class PxarEncoder
         }
     }
 
-    private static byte[] BuildPayloadHeader(long payloadLength)
+    private static byte[] BuildPayloadRef(long offset, long size)
+    {
+        var buffer = new byte[PxarFormat.HeaderSize + PxarFormat.PayloadRefSize];
+        WriteHeaderInto(buffer, PxarFormat.PayloadRef, buffer.Length);
+        BinaryPrimitives.WriteUInt64LittleEndian(buffer.AsSpan(PxarFormat.HeaderSize, 8), (ulong)offset);
+        BinaryPrimitives.WriteUInt64LittleEndian(buffer.AsSpan(PxarFormat.HeaderSize + 8, 8), (ulong)size);
+        return buffer;
+    }
+
+    internal static byte[] BuildPayloadHeader(long payloadLength)
     {
         var header = new byte[PxarFormat.HeaderSize];
         WriteHeaderInto(header, PxarFormat.Payload, PxarFormat.HeaderSize + payloadLength);
@@ -158,7 +211,7 @@ public sealed class PxarEncoder
         return buffer;
     }
 
-    private static void WriteHeaderInto(Span<byte> buffer, ulong htype, long fullSize)
+    internal static void WriteHeaderInto(Span<byte> buffer, ulong htype, long fullSize)
     {
         BinaryPrimitives.WriteUInt64LittleEndian(buffer.Slice(0, 8), htype);
         BinaryPrimitives.WriteUInt64LittleEndian(buffer.Slice(8, 8), (ulong)fullSize);
