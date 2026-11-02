@@ -127,6 +127,8 @@ static async Task<int> BackupAsync(List<string> specs, Dictionary<string, string
     var detectionMode = SplitArchiveBackup.ParseMode(flags.GetValueOrDefault("change-detection-mode"));
     if (imageMode && detectionMode != ChangeDetectionMode.Legacy)
         throw new ArgumentException("--change-detection-mode applies to file (pxar) backups, not --image");
+    if (detectionMode == ChangeDetectionMode.Metadata && !incremental)
+        throw new ArgumentException("--change-detection-mode metadata reuses the previous snapshot; it cannot be combined with --no-incremental (use data)");
     var excludes = new PxarExcludes(multi["exclude"]); // --exclude glob patterns (file backup only)
     if (!excludes.IsEmpty) Console.WriteLine($"  excludes: {string.Join(", ", multi["exclude"])}");
 

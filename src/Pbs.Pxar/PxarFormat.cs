@@ -31,6 +31,25 @@ public static class PxarFormat
     /// <summary>Size of a PAYLOAD_REF body (offset + size).</summary>
     public const int PayloadRefSize = 16;
 
+    /// <summary>
+    /// Largest FILENAME body accepted when reading (bytes, incl. the null terminator). Bodies are
+    /// allocated before they are read, so a crafted header must not be able to request gigabytes.
+    /// Generous: a 255-UTF-16-unit Windows name is at most 765 UTF-8 bytes.
+    /// </summary>
+    public const int MaxFilenameSize = 4096;
+
+    /// <summary>Largest SYMLINK / HARDLINK body accepted when reading (bytes).</summary>
+    public const int MaxPathSize = 64 * 1024;
+
+    /// <summary>Body length of a record of <paramref name="recordSize"/> bytes, checked against <paramref name="max"/>.</summary>
+    public static int CheckedBodyLength(long recordSize, int max, string what)
+    {
+        long len = recordSize - HeaderSize;
+        if (len < 0 || len > max)
+            throw new InvalidDataException($"pxar: {what} record body of {len} bytes exceeds the {max}-byte limit");
+        return (int)len;
+    }
+
     // Per-entry metadata records that the official client writes between ENTRY and the content
     // record (PAYLOAD/SYMLINK/…). The decoder and indexer skip ANY non-structural record by size, so
     // they do not depend on this list being exhaustive. Values from upstream pxar/src/format/mod.rs.

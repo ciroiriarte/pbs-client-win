@@ -104,8 +104,16 @@ public sealed class ReaderSession : IAsyncDisposable
     public async Task<long> RestoreDynamicArchiveAsync(string archiveName, Stream output, CryptConfig? crypt = null, CancellationToken ct = default)
     {
         var indexBytes = await DownloadFileAsync(archiveName, ct);
-        var entries = DynamicIndex.Parse(indexBytes);
+        return await RestoreDynamicArchiveAsync(DynamicIndex.Parse(indexBytes), output, crypt, ct);
+    }
 
+    /// <summary>
+    /// <see cref="RestoreDynamicArchiveAsync(string, Stream, CryptConfig?, CancellationToken)"/> from an
+    /// index the caller already downloaded (and, e.g., checked against the manifest), so the server
+    /// cannot hand out a different index the second time.
+    /// </summary>
+    public async Task<long> RestoreDynamicArchiveAsync(IReadOnlyList<DynamicIndexEntry> entries, Stream output, CryptConfig? crypt = null, CancellationToken ct = default)
+    {
         long total = 0;
         var chunkCache = new Dictionary<ChunkDigest, byte[]>();
         foreach (var entry in entries)
