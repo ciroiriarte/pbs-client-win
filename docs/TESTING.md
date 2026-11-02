@@ -86,6 +86,35 @@ Windows test env in the guest: same PBS_* vars (use `PBS_ENDPOINT=https://10.2.0
 `step*.ps1` scripts from prior runs live under the session scratchpad; the flow is: download+extract
 source → `dotnet test tests\Pbs.Vss.Tests` (VSS smoke + VSS→PBS E2E + volume image E2E).
 
+### Windows VM roles
+
+All on `bigiron.lan`, driven through the guest agent as above. Addresses and admin credentials live in
+`~/.config/pbs-client-win/test.env` and `vm<VMID>.env` (mode 600), never in the repo.
+
+| VMID | Name | Edition | Used for |
+|---|---|---|---|
+| 141 | `pbs-win-build` | Server 2022 Core | Build/publish (`-f net8.0-windows`), Windows unit tests, VSS + image E2E, VSS split-archive backups |
+| 143 | `pbs-win-wnbd-test` | Server 2022 Core | WinFsp mount engine (`--provider winfsp`; ProjFS is unavailable on Core), WNBD |
+| 144 | `pbs-win-projfs` | Server 2022 Desktop Experience | ProjFS mount engine (`--provider projfs`) |
+
+VM143 and VM144 are normally stopped; `qm start <VMID>` and wait for `qm agent <VMID> ping` before use.
+
+Recreating VM144 (ProjFS target):
+
+1. `qm clone 9021 144 --name pbs-win-projfs --full --storage dstore01` (9021 is the Desktop
+   Experience cloudbase-init template), then `qm set 144 --cores 4 --memory 8192 --onboot 0`
+   and `--cipassword … --ipconfig0 ip=dhcp`. Keep Secure Boot on: ProjFS is an inbox driver, and no
+   unsigned driver is involved.
+2. Start it and wait for the agent (the first boot can report "guest agent is not running" for a
+   while), then `Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart` and
+   reboot. Check: the feature state is `Enabled` and `C:\Windows\System32\drivers\PrjFlt.sys` exists.
+3. Install the .NET 8 SDK with `dotnet-install.ps1 -Channel 8.0 -InstallDir C:\dotnet` and add
+   `C:\dotnet` to the machine PATH. Gate: `C:\dotnet\dotnet.exe --list-sdks`. Send the PowerShell as
+   `-EncodedCommand` (see above): `$` variables quoted through `ssh` + `qm guest exec` get eaten
+   by the local shell.
+4. Build: `dotnet build src\Pbs.Cli -f net8.0-windows` (it pulls `Microsoft.Windows.ProjFS` from
+   NuGet). Then use the `mount … --provider projfs` checks in `docs/MOUNT.md`.
+
 ## 4. Interop checks (ground truth)
 
 Correctness is validated against the official `proxmox-backup-client` on `pbs-01`, e.g.:
