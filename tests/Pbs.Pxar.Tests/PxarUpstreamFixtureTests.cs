@@ -215,6 +215,33 @@ public class PxarUpstreamFixtureTests
         return found;
     }
 
+    // A crafted FILENAME header claiming a 1 GiB body must be rejected before anything is allocated
+    // (issue #33 review): patch the first FILENAME record of the upstream fixture and cut the archive.
+    private static byte[] WithOversizedFirstFilename()
+    {
+        var data = File.ReadAllBytes(Path.Combine(Fixtures, "unified.pxar"));
+        var tag = BitConverter.GetBytes(PxarFormat.Filename);
+        int at = data.AsSpan().IndexOf(tag);
+        Assert.True(at > 0, "fixture has a FILENAME record");
+        BitConverter.GetBytes((ulong)(1L << 30)).CopyTo(data, at + 8);
+        return data[..(at + 16)];
+    }
+
+    [Fact]
+    public async Task OversizedFilename_IsRejected_ByDecoder()
+    {
+        using var dir = new TempDir();
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() => PxarDecoder.ExtractAsync(new MemoryStream(WithOversizedFirstFilename()), dir.Path));
+        Assert.Contains("limit", ex.Message);
+    }
+
+    [Fact]
+    public async Task OversizedFilename_IsRejected_ByIndexer()
+    {
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() => PxarIndexer.BuildIndexAsync(new MemoryStream(WithOversizedFirstFilename())));
+        Assert.Contains("limit", ex.Message);
+    }
+
     private sealed class TempDir : IDisposable
     {
         public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pxar-fixture-" + Guid.NewGuid().ToString("N"));

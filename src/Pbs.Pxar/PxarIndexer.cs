@@ -117,7 +117,7 @@ public sealed class PxarIndexer
                 // ENTRY of its own. Resolve it to the (earlier) target so it reads the same content.
                 if (entrySize < HeaderSize + 8)
                     throw new InvalidDataException("pxar: HARDLINK record too short");
-                var linkBody = new byte[checked((int)(entrySize - HeaderSize))];
+                var linkBody = new byte[PxarFormat.CheckedBodyLength(entrySize, PxarFormat.MaxPathSize, "HARDLINK")];
                 await ReadExactAsync(linkBody, ct);
                 int linkEnd = linkBody[^1] == 0 ? linkBody.Length - 1 : linkBody.Length;
                 var linkTarget = Encoding.UTF8.GetString(linkBody, 8, linkEnd - 8).TrimStart('/');
@@ -259,7 +259,7 @@ public sealed class PxarIndexer
 
     private async Task<string> ReadStringAsync(long headerSize, CancellationToken ct)
     {
-        int len = checked((int)(headerSize - HeaderSize));
+        int len = PxarFormat.CheckedBodyLength(headerSize, PxarFormat.MaxFilenameSize, "FILENAME");
         var buffer = new byte[len];
         await ReadExactAsync(buffer, ct);
         int end = len > 0 && buffer[len - 1] == 0 ? len - 1 : len;

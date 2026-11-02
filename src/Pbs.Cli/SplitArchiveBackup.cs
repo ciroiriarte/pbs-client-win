@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Pbs.Abstractions;
 using Pbs.Protocol;
 using Pbs.Pxar;
@@ -40,17 +41,43 @@ public static class SplitArchiveBackup
         ChangeDetectionMode mode, CryptConfig? crypt, bool incremental, Action<string> log, CancellationToken ct = default)
     {
         var (metaName, payloadName) = PxarArchiveNames.SplitPair(archiveBase);
+        if (mode == ChangeDetectionMode.Metadata && !incremental)
+            throw new ArgumentException("--change-detection-mode metadata reuses the previous snapshot; it cannot be combined with --no-incremental");
 
         // The previous payload index: known chunks for dedup and, in metadata mode, what gets injected.
-        // Downloading it also registers its chunks with the server for this session.
-        var previousPayload = incremental || mode == ChangeDetectionMode.Metadata
-            ? await session.DownloadPreviousIndexAsync(payloadName!, ct)
-            : null;
-        var previousEntries = previousPayload is null ? Array.Empty<DynamicIndexEntry>() : DynamicIndex.Parse(previousPayload);
-
+        // Downloading it also registers its chunks with the server for this session. It is used only
+        // after the previous manifest checks out (signature when encrypted, crypt modes, index csum).
+        IReadOnlyList<DynamicIndexEntry> previousEntries = Array.Empty<DynamicIndexEntry>();
+        JsonDocument? manifest = null;
         Reference? reference = null;
-        if (mode == ChangeDetectionMode.Metadata && previousEntries.Count > 0)
-            reference = await LoadReferenceAsync(session, opts, metaName, payloadName!, previousEntries, crypt, log, ct);
+        try
+        {
+            var previousPayload = incremental ? await session.DownloadPreviousIndexAsync(payloadName!, ct) : null;
+            if (previousPayload is not null)
+            {
+                manifest = await session.DownloadPreviousManifestAsync(ct);
+                var problem = manifest is null ? "previous manifest is missing" : ManifestVerifier.CheckReusable(manifest.RootElement, crypt);
+                if (problem is null)
+                {
+                    var entries = DynamicIndex.Parse(previousPayload);
+                    try
+                    {
+                        ManifestVerifier.VerifyDynamicIndex(manifest!.RootElement, payloadName!, entries);
+                        previousEntries = entries;
+                    }
+                    catch (InvalidDataException ex) { problem = ex.Message; }
+                }
+                if (problem is not null)
+                    log($"  not reusing the previous snapshot: {problem}");
+            }
+
+            if (mode == ChangeDetectionMode.Metadata && previousEntries.Count > 0)
+                reference = await LoadReferenceAsync(session, opts, manifest!.RootElement, metaName, crypt, previousEntries, log, ct);
+        }
+        finally
+        {
+            manifest?.Dispose();
+        }
 
         var plan = PxarPayloadPlanner.Plan(PxarEncoder.FilesInEncodeOrder(tree), reference?.Index, reference?.Chunks);
 
@@ -67,46 +94,34 @@ public static class SplitArchiveBackup
     }
 
     private static async Task<Reference?> LoadReferenceAsync(
-        BackupSession session, PbsConnectionOptions opts, string metaName, string payloadName,
-        IReadOnlyList<DynamicIndexEntry> previousEntries, CryptConfig? crypt, Action<string> log, CancellationToken ct)
+        BackupSession session, PbsConnectionOptions opts, JsonElement manifest, string metaName, CryptConfig? crypt,
+        IReadOnlyList<DynamicIndexEntry> previousEntries, Action<string> log, CancellationToken ct)
     {
         var previousTime = await session.GetPreviousBackupTimeAsync(ct);
-        using var manifest = await session.DownloadPreviousManifestAsync(ct);
-        if (previousTime is null || manifest is null)
+        if (previousTime is null)
             return null;
-
-        var files = manifest.RootElement.TryGetProperty("files", out var f) ? f.EnumerateArray().ToList() : new();
-        var meta = files.FirstOrDefault(x => x.GetProperty("filename").GetString() == metaName);
-        if (meta.ValueKind == System.Text.Json.JsonValueKind.Undefined ||
-            !files.Any(x => x.GetProperty("filename").GetString() == payloadName))
+        // The manifest must describe the snapshot the reference reader opens.
+        if (!manifest.TryGetProperty("backup-time", out var bt) || bt.GetInt64() != previousTime.Value)
         {
-            log($"  previous snapshot has no split archive '{metaName}': encoding all files");
+            log("  previous manifest does not match the previous snapshot: encoding all files");
             return null;
-        }
-
-        // Injected chunks are referenced by digest as-is, so they must be in this backup's crypt mode
-        // and, when encrypted, under this key (encrypted digests are keyed).
-        var previousMode = meta.TryGetProperty("crypt-mode", out var cm) ? cm.GetString() : "none";
-        var currentMode = crypt is null ? "none" : "encrypt";
-        if (previousMode != currentMode)
-        {
-            log($"  previous snapshot crypt-mode '{previousMode}' differs from '{currentMode}': encoding all files");
-            return null;
-        }
-        if (crypt is not null)
-        {
-            var previousKey = manifest.RootElement.TryGetProperty("unprotected", out var u) && u.TryGetProperty("key-fingerprint", out var k)
-                ? k.GetString() : null;
-            if (!string.Equals(previousKey, crypt.FingerprintHex(), StringComparison.OrdinalIgnoreCase))
-            {
-                log("  previous snapshot was encrypted with a different key: encoding all files");
-                return null;
-            }
         }
 
         await using var reader = await ReaderSession.OpenAsync(opts, session.BackupType, session.BackupId, previousTime.Value, ct);
+        IReadOnlyList<DynamicIndexEntry> metaEntries;
+        try
+        {
+            metaEntries = DynamicIndex.Parse(await reader.DownloadFileAsync(metaName, ct));
+            ManifestVerifier.VerifyDynamicIndex(manifest, metaName, metaEntries);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or HttpRequestException)
+        {
+            log($"  previous snapshot has no usable split archive '{metaName}' ({ex.Message}): encoding all files");
+            return null;
+        }
+
         using var metaBuffer = new MemoryStream();
-        await reader.RestoreDynamicArchiveAsync(metaName, metaBuffer, crypt, ct);
+        await reader.RestoreDynamicArchiveAsync(metaEntries, metaBuffer, crypt, ct);
         metaBuffer.Position = 0;
         var index = (await PxarIndexer.BuildIndexAsync(metaBuffer, ct))
             .Where(e => e.Kind == PxarEntryKind.File)

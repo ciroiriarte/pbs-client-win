@@ -144,7 +144,7 @@ public sealed class PxarDecoder
             {
                 if (ch != PxarFormat.Symlink)
                     throw new InvalidDataException($"pxar: expected SYMLINK, got htype {ch:x16}");
-                var target = await ReadStringAsync(cs, ct);
+                var target = await ReadStringAsync(cs, PxarFormat.MaxPathSize, "SYMLINK", ct);
 
                 if (_includes is null || _includes.IsMatch(relPath, name))
                 {
@@ -202,7 +202,7 @@ public sealed class PxarDecoder
 
     private async Task ExtractHardlinkAsync(string path, string relPath, string name, long recordSize, CancellationToken ct)
     {
-        int len = checked((int)(recordSize - PxarFormat.HeaderSize));
+        int len = PxarFormat.CheckedBodyLength(recordSize, PxarFormat.MaxPathSize, "HARDLINK");
         if (len < 8) throw new InvalidDataException("pxar: HARDLINK record too short");
         var body = new byte[len];
         await ReadExactAsync(_in, body, ct);
@@ -387,15 +387,15 @@ public sealed class PxarDecoder
 
     private async Task<string> ReadNameAsync(long headerSize, CancellationToken ct)
     {
-        var name = await ReadStringAsync(headerSize, ct);
+        var name = await ReadStringAsync(headerSize, PxarFormat.MaxFilenameSize, "FILENAME", ct);
         if (name.Length == 0 || name.Contains('/') || name.Contains('\\') || name == ".." || name == ".")
             throw new InvalidDataException($"pxar: unsafe entry name '{name}'");
         return name;
     }
 
-    private async Task<string> ReadStringAsync(long headerSize, CancellationToken ct)
+    private async Task<string> ReadStringAsync(long headerSize, int max, string what, CancellationToken ct)
     {
-        int len = checked((int)(headerSize - PxarFormat.HeaderSize));
+        int len = PxarFormat.CheckedBodyLength(headerSize, max, what);
         var buffer = new byte[len];
         await ReadExactAsync(_in, buffer, ct);
         int end = len > 0 && buffer[len - 1] == 0 ? len - 1 : len; // strip null terminator
