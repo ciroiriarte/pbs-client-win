@@ -32,14 +32,19 @@ The sibling repo [`pbs-client`](https://github.com/ciroiriarte/pbs-client) cover
 
 | Capability | Status |
 |---|---|
-| File / directory backup (pxar) + restore | **working (M1)** — verified against PBS 4.2.5 |
-| CLI (`backup` / `restore` / `snapshots`) | **working (M1)** |
-| Client-side encryption (AES-256-GCM, `--keyfile`-compatible) | **working (M2)** — official client decrypts it |
+| File / directory backup (pxar) + restore, streamed | **working (M1)** — verified against PBS 4.2.5; the official client restores our archives |
+| CLI parity (`backup` / `restore` / `snapshot` / `prune` / `namespace` / `catalog` / `key` / `login` / `task` / …) | **working** — verbs and flags follow upstream `proxmox-backup-client` |
+| Client-side encryption (AES-256-GCM, `--keyfile`-compatible), signed manifest | **working (M2)** — official client decrypts it |
 | VSS application-consistent snapshots (`backup --vss`) | **working (M2)** — captures open/locked files, verified on Windows Server 2022 |
-| Incremental backups (known-chunk reuse) | planned (M2) |
+| Incremental backups (known-chunk reuse) | **working (M2)** |
 | Split archives (pxar v2 `.mpxar`/`.ppxar`, `--change-detection-mode data\|metadata`) | **working** — unchanged files reuse the previous payload chunks unread; interoperable with the official client both ways |
 | Full-disk / bare-metal image backup + restore (`backup --image`, FIDX) | **working (M3)** — VSS volume image, verified on Windows |
-| Windows Service, scheduling, MSI packaging, code signing | planned (M4) |
+| Browse a backup without restoring (`mount`: ProjFS / WinFsp; `map`: WNBD block device) | **working** — read-only |
+| Windows Service + scheduling, silent MSI | **working (M4)** — validated on Windows Server 2022 |
+| Code signing (SignPath) | in progress (M4) — pipeline drafted |
+| NTFS security descriptors / ADS / attributes in pxar | planned — see [ROADMAP](docs/ROADMAP.md#direction) |
+| Single-file restore from image backups (via `map` + native NTFS mount) | planned |
+| Minimal tray app (status, last run, errors, restore browser) | planned |
 | MSSQL application-aware backup (VSS Writer → SQL VDI/SMO) | planned (M5) |
 
 The M1 core is proven end to end: a directory is encoded to `pxar`, chunked, uploaded over the

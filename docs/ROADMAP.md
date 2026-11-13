@@ -81,6 +81,28 @@ unattended backups. All verified against a live PBS and the official client — 
 under the new passphrase (and reject the old), the 2FA path with a real TOTP-enrolled user, and the
 master key recovers the exact data key from our escrow blob.
 
+## Direction
+
+Decided 2026-11-13, after comparing with Salvanza (the renamed `tizbac/proxmoxbackupclient_go`,
+whose 2.0 release adds a full desktop GUI). This project stays a **headless, enterprise Windows
+client** for sysadmins and MSPs: upstream CLI parity, signed binaries, unattended MSI deployment,
+native Windows mount/map, and application-aware backup. It adds **only a minimal tray app** —
+status, last run, errors, and a restore browser — and no full GUI editor for backup sets.
+
+Priorities, in order:
+
+1. **NTFS metadata in pxar (#3)** — security descriptors, attributes, creation time and alternate data
+   streams, stored per entry (e.g. security descriptors as an xattr, in the style of Samba's
+   `security.NTACL`), so they survive a round-trip through the official client and work with the
+   catalog and metadata change detection. Large ADS need their own encoding; write a design doc first.
+2. **Single-file restore from image backups** — build on `map` (WNBD): bring the image's partitions
+   online read-only with drive letters so Windows reads NTFS natively.
+3. **M4 completion** — SignPath signing; then the **minimal tray app**.
+4. **M5 — MSSQL (#2, #30).**
+
+Not planned for now: a bare-metal restore ISO (a later WinPE + image restore once 2 exists),
+Undelete/Roll back, and Linux sources (already covered by the official client).
+
 ## Next
 
 - **M4 — Service, scheduling, packaging, code signing.** _(in progress)_
@@ -107,12 +129,10 @@ master key recovers the exact data key from our escrow blob.
 
 ## Known follow-ups
 
-- Windows metadata mapping in `pxar` (POSIX mode/uid/gid are currently synthesized; map Windows
-  ACLs/security descriptors) — revisit around M2/M3.
-- Streaming pxar/chunking for large archives (currently buffers the archive in memory).
-- Manifest signing (backups are encrypted but the manifest is not signed; official restore accepts
-  this today).
-- Defense-in-depth on restore: refuse to follow pre-existing on-disk symlinks during extraction.
+- Windows metadata mapping in `pxar` (#3; POSIX mode/uid/gid are currently synthesized). Now a
+  priority — see [Direction](#direction).
+- *Done:* streaming pxar/chunking (#4) and manifest signing (#6) in `2d1d74b`; the restore guard
+  against pre-existing on-disk symlinks (#7) in `d9a86a0`.
 
 ## Operational hardening (TODO — mostly M4 install/design)
 
