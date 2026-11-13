@@ -95,9 +95,9 @@ Priorities, in order:
    streams, stored per entry (e.g. security descriptors as an xattr, in the style of Samba's
    `security.NTACL`), so they survive a round-trip through the official client and work with the
    catalog and metadata change detection. Large ADS need their own encoding; write a design doc first.
-2. **Single-file restore from image backups** — build on `map` (WNBD): bring the image's partitions
+2. **Single-file restore from image backups (#37)** — build on `map` (WNBD): bring the image's partitions
    online read-only with drive letters so Windows reads NTFS natively.
-3. **M4 completion** — SignPath signing; then the **minimal tray app**.
+3. **M4 completion** — SignPath signing; then the **minimal tray app (#38)**.
 4. **M5 — MSSQL (#2, #30).**
 
 Not planned for now: a bare-metal restore ISO (a later WinPE + image restore once 2 exists),
