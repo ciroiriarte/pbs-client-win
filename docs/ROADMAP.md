@@ -91,7 +91,7 @@ status, last run, errors, and a restore browser — and no full GUI editor for b
 
 Priorities, in order:
 
-1. **NTFS metadata in pxar (#3)** — security descriptors, attributes, creation time and alternate data
+1. **NTFS metadata in pxar (#3, design in `docs/NTFS-METADATA.md`)** — security descriptors, attributes, creation time and alternate data
    streams, stored per entry (e.g. security descriptors as an xattr, in the style of Samba's
    `security.NTACL`), so they survive a round-trip through the official client and work with the
    catalog and metadata change detection. Large ADS need their own encoding; write a design doc first.
